@@ -4,58 +4,58 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from src.middleware.jwt_auth import get_current_rep
 from src.models.chat import ChatRequest
+from src.agents import orchestrator
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-def sse(event: str, data: str | dict, agent: str | None = None, verified: bool | None = None) -> str:
-    """Format a single SSE message."""
-    payload = {"event": event, "data": data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)}
-    if agent is not None:
-        payload["agent"] = agent
-    if verified is not None:
-        payload["verified"] = verified
+def sse(event: str, data: str | dict) -> str:
+    payload = {
+        "event": event,
+        "data":  data if isinstance(data, str) else json.dumps(data, ensure_ascii=False),
+    }
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-async def run_pipeline(request: ChatRequest, rep: dict):
-    """
-    Agent pipeline generator — yields SSE strings.
-    Phase 3 will replace the placeholder body with real LangGraph execution.
-    """
-    yield sse("thinking", "Đang phân tích câu hỏi...")
-    await asyncio.sleep(0.1)
+async def stream_pipeline(request: ChatRequest, rep: dict):
+    queue: asyncio.Queue = asyncio.Queue()
 
-    # ── Placeholder: intent classification ──────────────────────────────────
-    yield sse("thinking", "Phân loại ý định: product_knowledge")
-    await asyncio.sleep(0.1)
+    # Run pipeline in background — it writes events to the queue
+    async def run():
+        try:
+            await orchestrator.run(
+                customer_id=request.customer_id,
+                rep_id=rep["sub"],
+                message=request.message,
+                session_id=request.session_id or f"{rep['sub']}-{request.customer_id}",
+                stream_queue=queue,
+            )
+        except Exception as e:
+            await queue.put(("error", str(e)))
+            await queue.put(("done", "{}"))
 
-    # ── Placeholder: agent result ────────────────────────────────────────────
-    yield sse(
-        "agent_result",
-        {
-            "agent":    "product",
-            "answer":   f"[Phase 3 pending] Câu hỏi: '{request.message}' — agent pipeline chưa được triển khai.",
-            "sources":  [],
-            "verified": False,
-        },
-        agent="product",
-        verified=False,
-    )
+    task = asyncio.create_task(run())
 
-    # ── Placeholder: streamed synthesis tokens ───────────────────────────────
-    answer = "Tính năng đang được phát triển. Pipeline LangGraph sẽ được tích hợp trong Phase 3."
-    for token in answer:
-        yield sse("token", token)
-        await asyncio.sleep(0.01)
+    # Read from queue and yield SSE
+    while True:
+        try:
+            event_type, data = await asyncio.wait_for(queue.get(), timeout=60)
+        except asyncio.TimeoutError:
+            yield sse("error", "Pipeline timeout")
+            break
 
-    yield sse("done", "")
+        yield sse(event_type, data)
+
+        if event_type in ("done", "error"):
+            break
+
+    await task
 
 
 @router.post("")
 async def chat(request: ChatRequest, rep: dict = Depends(get_current_rep)):
     return StreamingResponse(
-        run_pipeline(request, rep),
+        stream_pipeline(request, rep),
         media_type="text/event-stream",
         headers={
             "Cache-Control":               "no-cache",
