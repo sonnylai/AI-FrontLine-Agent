@@ -207,10 +207,19 @@ def chunk_document(path: Path) -> list[dict]:
             })
             chunk_index += 1
         else:
-            for sub in recursive_split(text, CHUNK_TOKENS, OVERLAP_TOKENS):
-                sub = sub.strip()
-                if not sub:
-                    continue
+            subs = [s.strip() for s in recursive_split(text, CHUNK_TOKENS, OVERLAP_TOKENS) if s.strip()]
+            for sub_i, sub in enumerate(subs):
+                # Prepend section heading to continuation chunks so each sub-chunk
+                # is semantically self-contained (fixes retrieval of split sections)
+                if sub_i > 0:
+                    heading = ""
+                    if h3 and not sub.startswith("###"):
+                        heading = f"### {h3}\n"
+                    elif h2 and not sub.startswith("##"):
+                        heading = f"## {h2}\n"
+                    if heading:
+                        sub = heading + sub
+
                 chunks.append({
                     "doc_id":           doc_id,
                     "product_category": category,

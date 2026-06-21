@@ -1,12 +1,16 @@
 """
-Node ③ — IntentRewrite (Haiku).
-Uses short-term conversation history + long-term summaries to:
-  1. Resolve pronouns and vague references ("cái đó", "tại sao không?")
-  2. Classify intent
-  3. Rewrite query to be fully self-contained
-  4. Decide which agents to invoke
+Node ③ — IntentRewriteNode (Haiku).
+Single LLM call that:
+  1. Resolves pronouns and vague references using conversation history + long-term summaries
+  2. Classifies intent per sub-question
+  3. Resolves time expressions to concrete dates (e.g. "3 tháng qua" → date_from/date_to)
+  4. Outputs a structured sub_questions list — one entry per agent to invoke
+
+Output drives the fan-out: each sub_question becomes one Send() in the graph.
+See MEMORY_SCHEMA.md §1d for the full sub_questions schema.
 """
 import json
+from datetime import date
 import anthropic
 from src.agents.state import AgentState
 from src.config import get_settings
@@ -21,29 +25,59 @@ def _get_client() -> anthropic.AsyncAnthropic:
     return _client
 
 
-_SYSTEM = """Bạn là trợ lý phân loại câu hỏi cho hệ thống ngân hàng Techcombank.
-Nhiệm vụ: phân tích câu hỏi của chuyên viên tư vấn và trả về JSON.
+_SYSTEM = """Bạn là bộ phân loại câu hỏi cho hệ thống AI ngân hàng Techcombank.
+Hôm nay: {today}
 
-Các loại intent:
-- "product": câu hỏi về đặc điểm, phí, điều kiện, quyền lợi sản phẩm ngân hàng
-- "contract": câu hỏi về hợp đồng cụ thể, điều khoản, bồi thường, tình trạng của khách hàng
-- "advisory": câu hỏi về tư vấn, đề xuất sản phẩm phù hợp, chiến lược bán hàng
-- "multi": kết hợp nhiều loại trên
+Nhiệm vụ: phân tích câu hỏi → trả về danh sách sub_questions (JSON).
 
-Agents: product → ["product"], contract → ["contract"], advisory → ["advisory"],
-multi → tập hợp các agent cần thiết.
+INTENT và AGENT tương ứng:
+- TRANSACTION_QUERY  → agent: "query_dispatcher"
+  Dùng khi hỏi về dữ liệu CÓ CẤU TRÚC của khách hàng trong Postgres:
+  thu nhập/lương, sản phẩm đang dùng, chi tiêu, số dư, dư nợ, tiền gửi, bảo hiểm.
 
-QUAN TRỌNG: Nếu có lịch sử hội thoại, hãy dùng nó để:
-- Giải nghĩa đại từ mơ hồ ("cái đó", "quyền lợi đó", "sản phẩm này")
-- Hiểu câu hỏi ngắn ("tại sao không?", "còn gói khác?")
-- Viết lại câu hỏi đầy đủ, không phụ thuộc lịch sử
+- PRODUCT_KNOWLEDGE  → agent: "product"
+  Dùng khi hỏi về đặc điểm SẢN PHẨM ngân hàng: phí, lãi suất, điều kiện, quyền lợi.
+  (Thông tin này trong OpenSearch, KHÔNG phải Postgres)
 
-Trả về CHÍNH XÁC JSON sau, không giải thích:
+- CONTRACT_QUERY     → agent: "contract"
+  Dùng khi hỏi về hợp đồng cụ thể của khách hàng: điều khoản, bồi thường, tình trạng.
+
+- ADVISORY           → agent: "advisory"
+  Dùng khi hỏi về tư vấn, đề xuất sản phẩm phù hợp, chiến lược bán hàng NBA.
+
+query_type (chỉ dùng cho TRANSACTION_QUERY):
+- profile_demographics      : thu nhập, nghề nghiệp, KYC, credit score, thành phố
+- product_portfolio_summary : sản phẩm đang dùng, danh mục hợp đồng
+- aggregate_by_category     : chi tiêu theo danh mục (params: date_from, date_to)
+- aggregate_by_merchant     : chi tiêu theo merchant (params: date_from, date_to, merchant_category)
+- transaction_count_by_period: số giao dịch (params: date_from, date_to)
+- casa_balance_summary      : số dư tài khoản thanh toán/tiết kiệm
+- loan_balance_remaining    : dư nợ vay còn lại
+- term_deposit_list         : danh sách tiền gửi có kỳ hạn
+- insurance_contract_status : tình trạng hợp đồng bảo hiểm
+- segment_gap_analysis      : phân tích khoảng cách phân khúc, NBA gap
+
+QUAN TRỌNG:
+- Dùng lịch sử hội thoại để giải nghĩa đại từ mơ hồ và câu hỏi ngắn.
+- Chuyển biểu thức thời gian thành ngày cụ thể dựa vào hôm nay ({today}):
+  "tháng này" → date_from: ngày đầu tháng, date_to: hôm nay
+  "3 tháng qua" → date_from: 90 ngày trước hôm nay, date_to: hôm nay
+  "năm nay" → date_from: YYYY-01-01, date_to: hôm nay
+  Không đề cập thời gian → default: date_from 90 ngày trước, date_to hôm nay
+- Viết rewritten_query tự đầy đủ, thay thế đại từ bằng tên/mã cụ thể.
+
+Trả về CHÍNH XÁC JSON sau, không giải thích thêm:
 {
-  "intent": "<product|contract|advisory|multi>",
-  "active_agents": ["<agent1>", ...],
-  "rewritten_query": "<câu hỏi tự đầy đủ, không cần ngữ cảnh>",
-  "sub_questions": ["<câu hỏi con 1>", ...]
+  "sub_questions": [
+    {
+      "id": "sq1",
+      "intent": "<TRANSACTION_QUERY|PRODUCT_KNOWLEDGE|CONTRACT_QUERY|ADVISORY>",
+      "agent": "<query_dispatcher|product|contract|advisory>",
+      "query_type": "<template hoặc empty string nếu không phải TRANSACTION_QUERY>",
+      "params": {<các params cụ thể hoặc {} nếu không cần>},
+      "rewritten_query": "<câu hỏi tự đầy đủ>"
+    }
+  ]
 }"""
 
 
@@ -60,32 +94,32 @@ def _format_history(history: list[dict]) -> str:
 def _format_summaries(summaries: list[dict]) -> str:
     if not summaries:
         return ""
-    lines = ["LỊCH SỬ TƯ VẤN TRƯỚC (tóm tắt):"]
+    lines = ["LỊCH SỬ TƯ VẤN TRƯỚC:"]
     for s in summaries[:3]:
         lines.append(f"- {s.get('session_date', '')}: {s.get('summary', '')}")
-        if s.get("key_concerns"):
-            lines.append(f"  Mối quan tâm: {', '.join(s['key_concerns'])}")
     return "\n".join(lines)
 
 
 async def run(state: AgentState) -> dict:
-    message   = state["message"]
-    history   = state.get("conversation_history", [])
-    summaries = state.get("long_term_summaries", [])
+    today       = date.today().isoformat()
+    message     = state["message"]
     customer_id = state.get("customer_id", "")
+    history     = state.get("conversation_history", [])
+    summaries   = state.get("long_term_summaries", [])
 
-    history_block   = _format_history(history)
-    summaries_block = _format_summaries(summaries)
-    context_block   = "\n\n".join(filter(None, [history_block, summaries_block]))
+    context_block = "\n\n".join(filter(None, [
+        _format_history(history),
+        _format_summaries(summaries),
+    ]))
 
-    prompt = f"""{context_block + chr(10) + chr(10) if context_block else ""}Câu hỏi hiện tại (về khách hàng {customer_id}): {message}
-
-Phân loại và viết lại câu hỏi thành dạng tự đầy đủ."""
+    prompt = (
+        f"{context_block}\n\n" if context_block else ""
+    ) + f"Câu hỏi (về khách hàng {customer_id}): {message}"
 
     resp = await _get_client().messages.create(
         model=get_settings().anthropic_haiku_model,
-        max_tokens=512,
-        system=_SYSTEM,
+        max_tokens=1024,
+        system=_SYSTEM.replace("{today}", today),
         messages=[{"role": "user", "content": prompt}],
     )
 
@@ -95,17 +129,27 @@ Phân loại và viết lại câu hỏi thành dạng tự đầy đủ."""
 
     try:
         data = json.loads(raw)
+        sub_questions = data.get("sub_questions", [])
+        if not sub_questions:
+            raise ValueError("empty sub_questions")
     except Exception:
-        data = {
-            "intent":          "product",
-            "active_agents":   ["product"],
+        sub_questions = [{
+            "id":              "sq1",
+            "intent":          "PRODUCT_KNOWLEDGE",
+            "agent":           "product",
+            "query_type":      "",
+            "params":          {},
             "rewritten_query": message,
-            "sub_questions":   [message],
-        }
+        }]
+
+    # Derive active_agents and primary rewritten_query from sub_questions
+    active_agents   = [sq["agent"] for sq in sub_questions]
+    rewritten_query = sub_questions[0]["rewritten_query"] if sub_questions else message
 
     return {
-        "intent":          data.get("intent", "product"),
-        "active_agents":   data.get("active_agents", ["product"]),
-        "rewritten_query": data.get("rewritten_query", message),
-        "sub_questions":   data.get("sub_questions", [message]),
+        "sub_questions":   sub_questions,
+        "active_agents":   active_agents,
+        "rewritten_query": rewritten_query,
+        "query_type":      "",   # set per fan-out branch
+        "query_params":    {},   # set per fan-out branch
     }

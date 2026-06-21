@@ -28,6 +28,7 @@ async def stream_pipeline(request: ChatRequest, rep: dict):
                 rep_id=rep["sub"],
                 message=request.message,
                 session_id=request.session_id or f"{rep['sub']}-{request.customer_id}",
+                conversation_history=request.conversation_history,
                 stream_queue=queue,
             )
         except Exception as e:

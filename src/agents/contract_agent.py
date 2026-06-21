@@ -160,7 +160,7 @@ Hãy trả lời dựa trên hợp đồng thực tế của khách hàng."""
     answer = resp.content[0].text.strip()
 
     chunk_texts = [contract_context] + [h["_source"]["text"] for h in rag_hits]
-    verified, warning = nli_checker.check(answer, chunk_texts)
+    verified, warning = nli_checker.check(answer, chunk_texts, agent="contract")
 
     result: AgentResult = {
         "agent":    "contract",

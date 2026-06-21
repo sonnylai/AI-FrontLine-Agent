@@ -5,6 +5,7 @@ Production upgrade path: swap _heuristic_check for mDeBERTa-v3-base-mnli-xnli
 when PyTorch >= 2.4 is available.
 """
 import re
+from langsmith import traceable
 
 
 def _key_terms(text: str) -> set[str]:
@@ -18,44 +19,73 @@ def _key_terms(text: str) -> set[str]:
     return {t for t in tokens if t not in stopwords}
 
 
-def _heuristic_check(answer: str, context_chunks: list[str]) -> tuple[bool, str | None]:
+def _heuristic_check(answer: str, context_chunks: list[str]) -> tuple[bool, str | None, float]:
     """
-    Lightweight faithfulness check:
-    1. Key numerical facts in the answer must appear in at least one chunk.
-    2. Overall term overlap between answer and all chunks must be > 20%.
+    Returns (verified, warning, overlap_ratio).
+    Faithfulness rules:
+    1. Key term overlap between answer and all chunks must be > 20%.
+    2. Specific numbers (>3 digits) in the answer must appear in at least one chunk.
     """
     if not context_chunks:
-        return False, "Không có nguồn dữ liệu để xác minh câu trả lời."
+        return False, "Không có nguồn dữ liệu để xác minh câu trả lời.", 0.0
 
-    full_context = " ".join(context_chunks)
+    full_context  = " ".join(context_chunks)
     context_terms = _key_terms(full_context)
     answer_terms  = _key_terms(answer)
 
     if not answer_terms:
-        return True, None   # trivially grounded (empty answer)
+        return True, None, 1.0   # trivially grounded (empty answer)
 
     overlap = len(answer_terms & context_terms) / len(answer_terms)
     if overlap < 0.20:
-        return False, f"Câu trả lời chứa thông tin không có trong nguồn dữ liệu (overlap={overlap:.0%})."
+        return (
+            False,
+            f"Câu trả lời chứa thông tin không có trong nguồn dữ liệu (overlap={overlap:.0%}).",
+            overlap,
+        )
 
-    # Check specific numbers in answer appear somewhere in context
     answer_numbers = set(re.findall(r"\d[\d.,]+", answer))
     for num in answer_numbers:
-        # Allow slight formatting variation (12.000.000 vs 12,000,000)
         normalised = re.sub(r"[.,]", "", num)
         found = any(
             re.sub(r"[.,]", "", n) == normalised
             for n in re.findall(r"\d[\d.,]+", full_context)
         )
-        if not found and len(num) > 3:      # ignore small numbers like "10", "3"
-            return False, f"Số liệu '{num}' trong câu trả lời không có trong nguồn dữ liệu."
+        if not found and len(num) > 3:
+            return (
+                False,
+                f"Số liệu '{num}' trong câu trả lời không có trong nguồn dữ liệu.",
+                overlap,
+            )
 
-    return True, None
+    return True, None, overlap
 
 
-def check(answer: str, context_chunks: list[str]) -> tuple[bool, str | None]:
+@traceable(name="NLI·PerAgent", run_type="chain")
+def _log_nli(
+    agent: str,
+    answer_chars: int,
+    chunk_count: int,
+    overlap_pct: float,
+    verified: bool,
+    warning: str | None,
+) -> dict:
+    """LangSmith span — records per-agent faithfulness verdict."""
+    return {
+        "agent":        agent,
+        "answer_chars": answer_chars,
+        "chunk_count":  chunk_count,
+        "overlap_pct":  round(overlap_pct * 100, 1),
+        "verified":     verified,
+        "warning":      warning,
+    }
+
+
+def check(answer: str, context_chunks: list[str], agent: str = "unknown") -> tuple[bool, str | None]:
     """
-    Public interface.
-    Returns (verified: bool, warning: str | None).
+    Public interface. Returns (verified, warning).
+    Caller passes agent name so the LangSmith span is labelled correctly.
     """
-    return _heuristic_check(answer, context_chunks)
+    verified, warning, overlap = _heuristic_check(answer, context_chunks)
+    _log_nli(agent, len(answer), len(context_chunks), overlap, verified, warning)
+    return verified, warning

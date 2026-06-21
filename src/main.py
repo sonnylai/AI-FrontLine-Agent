@@ -2,6 +2,9 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()   # must run before LangGraph/LangChain imports so LANGCHAIN_* vars hit os.environ
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles

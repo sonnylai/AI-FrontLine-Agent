@@ -3,6 +3,7 @@ Layer 3: Output Guardrail — async, rule-based, runs post-stream in parallel wi
 Checks the final synthesised answer for PII leakage, compliance keywords, security issues.
 """
 import re
+from langsmith import traceable
 
 # PII that should never appear in an outbound response (always block, even in negation)
 _PII_PATTERNS = [
@@ -25,6 +26,14 @@ _VN_NEGATIONS = ("không", "chưa", "chưa có", "không có", "không phải", 
 _COMPILED_PII        = [re.compile(p) for p in _PII_PATTERNS]
 _COMPILED_COMPLIANCE = [re.compile(p) for p in _COMPLIANCE_PATTERNS]
 
+_PII_LABELS        = ["pii:account_id", "pii:card_number", "pii:credential"]
+_COMPLIANCE_LABELS = [
+    "compliance:guaranteed_return",
+    "compliance:buy_now",
+    "compliance:no_risk",
+    "compliance:guaranteed_profit",
+]
+
 
 def _preceded_by_negation(text: str, match: re.Match, window: int = 40) -> bool:
     """True if a Vietnamese negation word appears within `window` chars before the match."""
@@ -32,18 +41,38 @@ def _preceded_by_negation(text: str, match: re.Match, window: int = 40) -> bool:
     return any(neg in before for neg in _VN_NEGATIONS)
 
 
+@traceable(name="NLI·OutputGuardrail", run_type="chain")
+def _log_guardrail(answer_chars: int, passed: bool, triggered_rule: str | None, warning: str | None) -> dict:
+    """LangSmith span — records which rule fired (if any)."""
+    return {
+        "answer_chars":   answer_chars,
+        "passed":         passed,
+        "triggered_rule": triggered_rule,
+        "warning":        warning,
+    }
+
+
 async def check(answer: str) -> tuple[bool, str | None]:
     """
     Returns (passed: bool, warning: str | None).
     passed=False means the answer contains a compliance or PII issue.
     """
-    for pattern in _COMPILED_PII:
-        if pattern.search(answer):
-            return False, "Câu trả lời có thể chứa thông tin nhạy cảm — vui lòng kiểm tra trước khi chia sẻ."
+    triggered_rule: str | None = None
 
-    for pattern in _COMPILED_COMPLIANCE:
+    for i, pattern in enumerate(_COMPILED_PII):
+        if pattern.search(answer):
+            warning = "Câu trả lời có thể chứa thông tin nhạy cảm — vui lòng kiểm tra trước khi chia sẻ."
+            triggered_rule = _PII_LABELS[i]
+            _log_guardrail(len(answer), False, triggered_rule, warning)
+            return False, warning
+
+    for i, pattern in enumerate(_COMPILED_COMPLIANCE):
         match = pattern.search(answer)
         if match and not _preceded_by_negation(answer, match):
-            return False, "Câu trả lời chứa từ ngữ không phù hợp với quy định tuân thủ ngân hàng."
+            warning = "Câu trả lời chứa từ ngữ không phù hợp với quy định tuân thủ ngân hàng."
+            triggered_rule = _COMPLIANCE_LABELS[i]
+            _log_guardrail(len(answer), False, triggered_rule, warning)
+            return False, warning
 
+    _log_guardrail(len(answer), True, None, None)
     return True, None

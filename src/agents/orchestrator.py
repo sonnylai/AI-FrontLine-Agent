@@ -9,12 +9,13 @@ Node order:
   ⑤ aggregator            — merge results + Sonnet streaming synthesis
 """
 import asyncio
+import os
 from langgraph.graph import StateGraph, END, START
 from langgraph.types import Send, RunnableConfig
 
 from src.agents.state import AgentState
 from src.agents.nodes import intent_rewrite, aggregator
-from src.agents import product_agent, contract_agent, advisory_agent
+from src.agents import product_agent, contract_agent, advisory_agent, query_dispatcher
 from src.cache import session_store
 from src.safety import input_guardrail
 
@@ -61,6 +62,10 @@ async def _advisory_agent(state: AgentState) -> dict:
     return await advisory_agent.run(state)
 
 
+async def _query_dispatcher(state: AgentState) -> dict:
+    return await query_dispatcher.run(state)
+
+
 # ── Node ⑤ — Aggregator ──────────────────────────────────────────────────────
 
 async def _aggregator(state: AgentState, config: RunnableConfig) -> dict:
@@ -85,12 +90,24 @@ def _route_after_guard(state: AgentState) -> str:
 
 def _fan_out(state: AgentState) -> list[Send] | str:
     node_map = {
-        "product":  "_product_agent",
-        "contract": "_contract_agent",
-        "advisory": "_advisory_agent",
+        "query_dispatcher": "_query_dispatcher",
+        "product":          "_product_agent",
+        "contract":         "_contract_agent",
+        "advisory":         "_advisory_agent",
     }
-    agents = state.get("active_agents", ["product"])
-    sends = [Send(node_map[a], state) for a in agents if a in node_map]
+    sub_questions = state.get("sub_questions", [])
+    sends = []
+    for sq in sub_questions:
+        node = node_map.get(sq.get("agent", ""))
+        if node:
+            # Each branch gets the full state with this sub-question's specific fields injected
+            branch_state = {
+                **state,
+                "query_type":      sq.get("query_type", ""),
+                "query_params":    sq.get("params", {}),
+                "rewritten_query": sq.get("rewritten_query", state.get("rewritten_query", "")),
+            }
+            sends.append(Send(node, branch_state))
     return sends if sends else "aggregator"
 
 
@@ -103,6 +120,7 @@ def _build_graph() -> StateGraph:
     g.add_node("input_guard",          _input_guard)
     g.add_node("blocked",              _block_and_done)
     g.add_node("intent_rewrite",       _intent_rewrite)
+    g.add_node("_query_dispatcher",    _query_dispatcher)
     g.add_node("_product_agent",       _product_agent)
     g.add_node("_contract_agent",      _contract_agent)
     g.add_node("_advisory_agent",      _advisory_agent)
@@ -119,8 +137,9 @@ def _build_graph() -> StateGraph:
     g.add_conditional_edges(
         "intent_rewrite",
         _fan_out,
-        ["_product_agent", "_contract_agent", "_advisory_agent", "aggregator"],
+        ["_query_dispatcher", "_product_agent", "_contract_agent", "_advisory_agent", "aggregator"],
     )
+    g.add_edge("_query_dispatcher", "aggregator")
     g.add_edge("_product_agent",  "aggregator")
     g.add_edge("_contract_agent", "aggregator")
     g.add_edge("_advisory_agent", "aggregator")
@@ -151,10 +170,11 @@ async def run(
         "conversation_history": conversation_history[-10:],  # last 10 turns max
         "customer_360":         {},
         "long_term_summaries":  [],
-        "intent":               "",
-        "rewritten_query":      "",
         "sub_questions":        [],
         "active_agents":        [],
+        "rewritten_query":      "",
+        "query_type":           "",
+        "query_params":         {},
         "agent_results":        [],
         "final_answer":         "",
         "final_verified":       False,
@@ -163,9 +183,18 @@ async def run(
         "input_block_reason":   None,
     }
 
+    callbacks = []
+    if os.environ.get("LANGCHAIN_TRACING_V2") == "true":
+        from langchain_core.tracers import LangChainTracer
+        callbacks = [LangChainTracer(
+            project_name=os.environ.get("LANGCHAIN_PROJECT", "ai-frontline-agent"),
+        )]
+
     config: RunnableConfig = {
         "configurable": {"stream_queue": stream_queue},
         "recursion_limit": 25,
+        "run_name":        f"chat:{customer_id}",
+        "callbacks":       callbacks,
     }
 
     await _graph.ainvoke(initial_state, config=config)

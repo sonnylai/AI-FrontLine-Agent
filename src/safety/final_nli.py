@@ -4,6 +4,7 @@ Async, runs after streaming completes.
 """
 import json
 import anthropic
+from langsmith import traceable
 from src.config import get_settings
 
 _client: anthropic.AsyncAnthropic | None = None
@@ -31,12 +32,19 @@ Trả về JSON:
 {{"consistent": true/false, "issues": "mô tả vấn đề nếu có hoặc null"}}"""
 
 
+@traceable(name="NLI·Final", run_type="chain")
 async def check(final_answer: str, agent_results: list[dict]) -> tuple[bool, str | None]:
+    """
+    LangSmith span covers the full Haiku call + verdict.
+    Inputs recorded: final_answer preview, agent summaries.
+    Outputs recorded: return value (consistent, issues).
+    """
     if not agent_results or not final_answer:
         return True, None
 
     summaries = "\n".join(
-        f"[{r['agent'].upper()}]: {r['answer'][:300]}" for r in agent_results
+        f"[{r['agent'].upper()} verified={r['verified']}]: {r['answer'][:300]}"
+        for r in agent_results
     )
 
     try:
@@ -53,11 +61,10 @@ async def check(final_answer: str, agent_results: list[dict]) -> tuple[bool, str
             }],
         )
         raw = resp.content[0].text.strip()
-        # Strip markdown code fences if present
         raw = raw.strip("`").strip()
         if raw.startswith("json"):
             raw = raw[4:].strip()
-        data = json.loads(raw)
+        data       = json.loads(raw)
         consistent = data.get("consistent", True)
         issues     = data.get("issues")
         return consistent, issues if not consistent else None

@@ -32,27 +32,20 @@ def _get_haiku() -> anthropic.AsyncAnthropic:
 
 # ── GraphQL query — customer 360 + long-term memory ──────────────────────────
 
+# Loads ONLY the 8 minimal fields needed by agents for context and NBA.
+# Transactions, balances, and full contract details are NOT loaded here —
+# QueryDispatcher fetches those on-demand from Hasura when explicitly asked.
 _CUSTOMER_QUERY = """
 query LoadSession($id: String!) {
   customers(where: {customer_id: {_eq: $id}}) {
-    customer_id full_name segment kyc_status
-    credit_score loyalty_points city occupation income_range relationship_since
-    assigned_rep_id
-    rep { rep_id full_name branch }
+    customer_id
+    full_name
+    segment
+    kyc_status
+    income_range
+    occupation
+    city
     products_held { product_code }
-    contracts(order_by: {start_date: desc}) {
-      contract_id product_type product_name status
-      start_date end_date key_amount extra_fields
-      clauses {
-        clause_id clause_number title benefit
-        customer_qualifies disqualification_reason
-      }
-      coverages { coverage_id coverage_type limit_amount conditions }
-    }
-    transactions(limit: 30, order_by: {transaction_date: desc}) {
-      transaction_id transaction_date amount type
-      merchant_name merchant_category description status
-    }
   }
 }
 """
@@ -97,7 +90,10 @@ async def _assemble(customer_id: str) -> dict:
     """Load all sources and return assembled context dict."""
     data = await hasura_client.query(_CUSTOMER_QUERY, {"id": customer_id})
     rows = data.get("customers", [])
-    customer_360 = rows[0] if rows else {}
+    raw  = rows[0] if rows else {}
+
+    # Flatten products_held from [{product_code: "X"}] → ["X"]
+    customer_360 = {**raw, "products_held": [p["product_code"] for p in raw.get("products_held", [])]}
 
     summaries = _load_summaries(customer_id)
 

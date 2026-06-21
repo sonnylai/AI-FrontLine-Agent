@@ -33,7 +33,7 @@ Quy tắc:
 def _build_prompt(query: str, context: str, customer: dict) -> str:
     segment  = customer.get("segment", "N/A")
     products = customer.get("products_held", [])
-    held     = ", ".join(p if isinstance(p, str) else p.get("product_code", "") for p in products)
+    held     = ", ".join(products)   # products_held is now list[str]
     return f"""THÔNG TIN KHÁCH HÀNG:
 - Phân khúc: {segment}
 - Sản phẩm đang sử dụng: {held}
@@ -86,7 +86,7 @@ async def run(state: AgentState) -> dict:
     answer = resp.content[0].text.strip()
 
     chunk_texts = [h["_source"]["text"] for h in hits]
-    verified, warning = nli_checker.check(answer, chunk_texts)
+    verified, warning = nli_checker.check(answer, chunk_texts, agent="product")
 
     result: AgentResult = {
         "agent":    "product",
