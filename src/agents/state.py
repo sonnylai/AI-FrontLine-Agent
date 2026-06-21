@@ -17,22 +17,28 @@ class AgentState(TypedDict):
     message:     str
     session_id:  str
 
-    # ── After intent rewrite (Node 1) ────────────────────────────────────────
+    # ── Short-term memory: conversation turns this session (from frontend) ───
+    # [{role: "rep"|"agent", content: str}, ...]  — last 10 turns max
+    conversation_history: list[dict]
+
+    # ── Long-term memory + customer 360: loaded from Redis / Hasura + OS ─────
+    # Populated by Orchestrator node ① (Load Session Context)
+    customer_360:         dict       # full profile from Hasura
+    long_term_summaries:  list[dict] # last 5 session summaries from OpenSearch
+
+    # ── After intent rewrite (Node 2) ────────────────────────────────────────
     intent:          str            # "product" | "contract" | "advisory" | "multi"
     rewritten_query: str
     sub_questions:   list[str]
     active_agents:   list[str]      # agents to invoke e.g. ["product", "contract"]
 
-    # ── After query dispatcher (Node 2) ──────────────────────────────────────
-    customer_360: dict              # full profile from Hasura
-
     # ── Agent results — list reducer so parallel agents can each append ──────
     agent_results: Annotated[list[AgentResult], operator.add]
 
-    # ── After aggregator / synthesis (Node 3) ────────────────────────────────
-    final_answer: str
-    final_verified: bool
-    final_warning:  Optional[str]
+    # ── After aggregator / synthesis ─────────────────────────────────────────
+    final_answer:    str
+    final_verified:  bool
+    final_warning:   Optional[str]
 
     # ── Safety ───────────────────────────────────────────────────────────────
     input_blocked:       bool

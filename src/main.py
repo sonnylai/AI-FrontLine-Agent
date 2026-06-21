@@ -6,8 +6,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from src.api import auth, chat, customers
+from src.api import auth, chat, customers, sessions
 from src.db import hasura_client, neo4j_client, opensearch_client, postgres
+from src.cache import redis_client
 from src.config import get_settings
 
 logging.basicConfig(
@@ -34,6 +35,9 @@ async def lifespan(app: FastAPI):
     opensearch_client.init_client()
     log.info("OpenSearch client ready")
 
+    await redis_client.init_client()
+    log.info("Redis client ready")
+
     log.info("All connections up — AI FrontLine Agent V2 is ready")
     yield
 
@@ -41,6 +45,7 @@ async def lifespan(app: FastAPI):
     await postgres.close_pool()
     await hasura_client.close_client()
     await neo4j_client.close_driver()
+    await redis_client.close_client()
     log.info("Shutdown complete")
 
 
@@ -63,6 +68,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(customers.router)
+app.include_router(sessions.router)
 
 
 @app.get("/health", tags=["system"])
