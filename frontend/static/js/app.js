@@ -9,7 +9,7 @@ const state = {
   streaming:   false,
 };
 
-const API = "http://localhost:8000";
+const API = "";
 
 /* ── DOM refs ──────────────────────────────────────────────────────────────── */
 const $ = id => document.getElementById(id);

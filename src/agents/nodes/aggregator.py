@@ -1,6 +1,7 @@
 """
 Node — Aggregator + Final Synthesis.
-Merges parallel agent results, streams Sonnet answer, runs Final NLI.
+Merges parallel agent results, streams Sonnet answer, then runs
+Layer 3 (Output Guardrail) and Layer 4 (Final NLI) in parallel post-stream.
 Tokens are written to stream_queue (passed via RunnableConfig).
 """
 import asyncio
@@ -10,7 +11,7 @@ from langgraph.types import RunnableConfig
 
 from src.agents.state import AgentState
 from src.config import get_settings
-from src.safety import final_nli
+from src.safety import final_nli, output_guardrail
 
 _client: anthropic.AsyncAnthropic | None = None
 
@@ -59,7 +60,7 @@ async def run(state: AgentState, config: RunnableConfig) -> dict:
     queue: asyncio.Queue = config["configurable"]["stream_queue"]
     results = state.get("agent_results", [])
 
-    # Emit each agent result as an event before synthesis
+    # Emit each agent result before synthesis
     for r in results:
         await queue.put(("agent_result", json.dumps({
             "agent":    r["agent"],
@@ -71,7 +72,7 @@ async def run(state: AgentState, config: RunnableConfig) -> dict:
 
     await queue.put(("thinking", "Đang tổng hợp câu trả lời..."))
 
-    # Final synthesis — stream tokens
+    # Stream final synthesis
     full_answer = ""
     prompt = _build_synthesis_prompt(state)
 
@@ -85,16 +86,23 @@ async def run(state: AgentState, config: RunnableConfig) -> dict:
             full_answer += token
             await queue.put(("token", token))
 
-    # Final NLI (async, runs after streaming)
-    verified, warning = await final_nli.check(full_answer, results)
+    # Layer 3 + Layer 4 run in parallel post-stream (do not block tokens)
+    (og_passed, og_warning), (nli_verified, nli_warning) = await asyncio.gather(
+        output_guardrail.check(full_answer),
+        final_nli.check(full_answer, results),
+    )
+
+    # Combine verdicts: both must pass for overall verified
+    overall_verified = og_passed and nli_verified
+    overall_warning  = og_warning or nli_warning
 
     await queue.put(("done", json.dumps({
-        "verified": verified,
-        "warning":  warning,
+        "verified": overall_verified,
+        "warning":  overall_warning,
     }, ensure_ascii=False)))
 
     return {
         "final_answer":   full_answer,
-        "final_verified": verified,
-        "final_warning":  warning,
+        "final_verified": overall_verified,
+        "final_warning":  overall_warning,
     }

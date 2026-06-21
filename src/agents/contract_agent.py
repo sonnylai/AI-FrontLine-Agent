@@ -1,10 +1,13 @@
 """
 ContractKnowledgeAgent: Neo4j traversal + RAG → Sonnet reasoning → per-agent NLI.
-Answers questions about a specific customer's contracts, clauses, and eligibility.
+Contract graph data cached in Redis (contract:{customer_id}, TTL 12h).
+RAG results cached in Redis (rag:{query_hash}, TTL 6h).
 """
+import hashlib
 import json
 import anthropic
 from src.agents.state import AgentState, AgentResult
+from src.cache import redis_client
 from src.config import get_settings
 from src.db import neo4j_client
 from src.rag import retriever
@@ -30,8 +33,14 @@ Quy tắc:
 - Trả lời bằng tiếng Việt, chính xác và chuyên nghiệp."""
 
 
-async def _get_contract_graph(customer_id: str) -> list[dict]:
-    return await neo4j_client.run_query("""
+async def _get_contract_records(customer_id: str) -> list[dict]:
+    """Cache-aside: Redis → Neo4j."""
+    cache_key = redis_client.key_contract(customer_id)
+    cached = await redis_client.get(cache_key)
+    if cached:
+        return cached
+
+    records = await neo4j_client.run_query("""
         MATCH (cu:Customer {customer_id: $cid})-[:HAS_CONTRACT]->(ct:Contract)
         OPTIONAL MATCH (ct)-[:HAS_CLAUSE]->(cl:Clause)
         OPTIONAL MATCH (ct)-[:HAS_COVERAGE]->(cov:Coverage)
@@ -58,6 +67,30 @@ async def _get_contract_graph(customer_id: str) -> list[dict]:
                }) AS coverages
     """, {"cid": customer_id})
 
+    await redis_client.set(cache_key, records, ttl=redis_client.TTL_CONTRACT)
+    return records
+
+
+async def _get_rag_hits(query: str, index: str) -> list[dict]:
+    """Cache-aside for RAG results."""
+    cache_key = redis_client.key_rag(
+        hashlib.md5(f"{index}:{query}".encode()).hexdigest()
+    )
+    cached = await redis_client.get(cache_key)
+    if cached:
+        return cached
+
+    hits = await retriever.aretrieve(query=query, index=index, top_n_final=3)
+    serializable = [
+        {"_id": h["_id"], "_source": {"text": h["_source"]["text"],
+         "product_name": h["_source"].get("product_name", ""),
+         "h2_section":   h["_source"].get("h2_section", ""),
+         "h3_section":   h["_source"].get("h3_section", "")}}
+        for h in hits
+    ]
+    await redis_client.set(cache_key, serializable, ttl=redis_client.TTL_RAG)
+    return hits
+
 
 def _format_contracts(records: list[dict]) -> str:
     lines = []
@@ -70,19 +103,20 @@ def _format_contracts(records: list[dict]) -> str:
                 pass
 
         lines.append(f"\n## {r['product_name']} ({r['contract_id']})")
-        lines.append(f"Trạng thái: {r['status']} | Từ: {r.get('start_date', 'N/A')} đến {r.get('end_date', 'N/A')}")
+        lines.append(f"Trạng thái: {r['status']} | Từ: {r.get('start_date','N/A')} đến {r.get('end_date','N/A')}")
         if r.get("key_amount"):
             lines.append(f"Số tiền chính: {r['key_amount']:,} VND")
-        if extra:
-            for k, v in extra.items():
-                lines.append(f"{k}: {v}")
+        for k, v in extra.items():
+            lines.append(f"{k}: {v}")
 
         clauses = [c for c in (r.get("clauses") or []) if c.get("clause_number")]
         if clauses:
             lines.append("\nĐiều khoản:")
             for cl in clauses:
-                q = "✅ ĐỦ ĐIỀU KIỆN" if cl.get("qualifies") else ("❌ KHÔNG ĐỦ: " + (cl.get("disqualification") or "")) if cl.get("qualifies") is False else "⬜ Chưa đánh giá"
-                lines.append(f"  [{cl['clause_number']}] {cl.get('title', '')} — {q}")
+                q = ("✅ ĐỦ ĐIỀU KIỆN" if cl.get("qualifies") else
+                     "❌ KHÔNG ĐỦ: " + (cl.get("disqualification") or "")
+                     if cl.get("qualifies") is False else "⬜ Chưa đánh giá")
+                lines.append(f"  [{cl['clause_number']}] {cl.get('title','')} — {q}")
                 if cl.get("benefit"):
                     lines.append(f"      Quyền lợi: {cl['benefit']}")
 
@@ -100,12 +134,12 @@ async def run(state: AgentState) -> dict:
     query       = state.get("rewritten_query") or state["message"]
     customer_id = state["customer_id"]
 
-    # Neo4j: get contract graph
-    records = await _get_contract_graph(customer_id)
+    # Neo4j (cached)
+    records          = await _get_contract_records(customer_id)
     contract_context = _format_contracts(records) if records else "Không tìm thấy hợp đồng."
 
-    # RAG on contract-clauses index for deeper clause content
-    rag_hits = await retriever.aretrieve(query=query, index="contract-clauses", top_n_final=3)
+    # RAG on clause text (cached)
+    rag_hits    = await _get_rag_hits(query, "contract-clauses")
     rag_context = retriever.format_chunks(rag_hits) if rag_hits else ""
 
     prompt = f"""DỮ LIỆU HỢP ĐỒNG CỦA KHÁCH HÀNG {customer_id}:
@@ -125,7 +159,6 @@ Hãy trả lời dựa trên hợp đồng thực tế của khách hàng."""
     )
     answer = resp.content[0].text.strip()
 
-    # NLI check against contract data
     chunk_texts = [contract_context] + [h["_source"]["text"] for h in rag_hits]
     verified, warning = nli_checker.check(answer, chunk_texts)
 
