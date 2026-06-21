@@ -264,3 +264,19 @@ sequenceDiagram
     FE-->>Rep: "Mr A currently holds: 2 CASA accounts, 1 home loan (450M VND remaining),<br/>1 active Banca Life Insurance contract, and 1 Gold Credit Card."
     OG-->>FE: SSE event {type: "verified"}
 ```
+
+---
+
+## Key Design Decisions
+
+| Concern | Mechanism |
+|---|---|
+| Auth | JWT validated per-request; Hasura claims embedded for row-level security |
+| Session context | Redis cache (4h TTL) — avoids re-fetching Postgres + OpenSearch on every message |
+| Query cache | Per-query Redis keys with tiered TTL (30m transactions, 24h demographics) |
+| Structured data | GraphQL via Hasura → Postgres — no LLM, `verified=True` always |
+| RAG data | OpenSearch vector search → product / contract docs |
+| Intent routing | Haiku LLM → fan-out to 1–N agents in parallel via LangGraph `Send()` |
+| Synthesis | Sonnet streams tokens directly to SSE queue — no buffering delay |
+| Safety | 4 layers: input regex (sync) → per-agent NLI → output regex → final NLI (Haiku, post-stream) |
+| Observability | LangSmith `@traceable` spans on RAG stages, Hasura calls, and all NLI layers |
