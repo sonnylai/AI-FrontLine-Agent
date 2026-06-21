@@ -6,8 +6,8 @@ from src.models.customer import Customer360, Contract, Transaction, SalesRep
 router = APIRouter(prefix="/customer", tags=["customers"])
 
 CUSTOMER_360_QUERY = """
-query Customer360($customer_id: String!) {
-  customers(where: {customer_id: {_eq: $customer_id}}) {
+query Customer360($customer_id: String!, $rep_id: String!) {
+  customers(where: {customer_id: {_eq: $customer_id}, assigned_rep_id: {_eq: $rep_id}}) {
     customer_id
     full_name
     segment
@@ -54,7 +54,7 @@ query Customer360($customer_id: String!) {
 
 @router.get("/{customer_id}", response_model=Customer360)
 async def get_customer_360(customer_id: str, rep: dict = Depends(get_current_rep)):
-    data = await hasura_client.query(CUSTOMER_360_QUERY, {"customer_id": customer_id})
+    data = await hasura_client.query(CUSTOMER_360_QUERY, {"customer_id": customer_id, "rep_id": rep["sub"]})
     rows = data.get("customers", [])
 
     if not rows:
