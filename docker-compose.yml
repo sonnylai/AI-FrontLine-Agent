@@ -1,0 +1,99 @@
+services:
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.4-alpine
+    container_name: afl_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── OpenSearch ───────────────────────────────────────────────────────────────
+  opensearch:
+    image: opensearchproject/opensearch:2.17.1
+    container_name: afl_opensearch
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Frontline2026@Xyz
+      - plugins.security.disabled=false
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk -u admin:Frontline2026@Xyz https://localhost:9200/_cluster/health | grep -qE 'green|yellow'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.17.1
+    container_name: afl_opensearch_dashboards
+    ports:
+      - "5601:5601"
+    environment:
+      - OPENSEARCH_HOSTS=["https://opensearch:9200"]
+      - OPENSEARCH_USERNAME=admin
+      - OPENSEARCH_PASSWORD=Frontline2026@Xyz
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  # ── Neo4j ────────────────────────────────────────────────────────────────────
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: afl_neo4j
+    ports:
+      - "7474:7474"   # browser UI
+      - "7687:7687"   # bolt protocol
+    environment:
+      - NEO4J_AUTH=neo4j/Frontline2026@Xyz
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Hasura ───────────────────────────────────────────────────────────────────
+  hasura:
+    image: hasura/graphql-engine:v2.44.0
+    container_name: afl_hasura
+    ports:
+      - "8080:8080"
+    environment:
+      - HASURA_GRAPHQL_DATABASE_URL=postgresql://admin:admin@host.docker.internal:5432/ai_frontline_v2
+      - HASURA_GRAPHQL_ENABLE_CONSOLE=true
+      - HASURA_GRAPHQL_DEV_MODE=true
+      - HASURA_GRAPHQL_ENABLED_LOG_TYPES=startup,http-log,webhook-log,websocket-log,query-log
+      - HASURA_GRAPHQL_ADMIN_SECRET=hasura-admin-secret-2026
+      - HASURA_GRAPHQL_JWT_SECRET={"type":"HS256","key":"crm-jwt-secret-key-change-in-prod"}
+    depends_on: []   # PostgreSQL runs on host, not in Docker
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  redis_data:
+  opensearch_data:
+  neo4j_data:
+  neo4j_logs:

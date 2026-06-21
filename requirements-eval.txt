@@ -1,0 +1,12 @@
+# Evaluation dependencies — installed separately, never imported by the runtime app.
+# Run: pip install -r requirements-eval.txt
+#
+# ragas 0.2.x requires langchain-core 0.3.x which conflicts with langgraph 1.x.
+# Keep this in a separate venv or install only when running offline evaluation jobs.
+
+ragas>=0.2.0
+langchain>=0.3.0,<1.0.0
+langchain-community>=0.3.0,<1.0.0
+langchain-openai>=0.2.0         # ragas uses OpenAI embeddings by default for scoring
+datasets>=2.18.0                # HuggingFace datasets for golden dataset management
+pandas>=2.0.0

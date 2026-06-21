@@ -1,0 +1,92 @@
+[
+  {
+    "rep_id": "REP-001",
+    "full_name": "Trần Minh Tuấn",
+    "gender": "M",
+    "email": "rep001@tcb.com.vn",
+    "phone": "0902867825",
+    "branch": "Chi nhánh Quận 1",
+    "active": true
+  },
+  {
+    "rep_id": "REP-002",
+    "full_name": "Lê Thị Hương",
+    "gender": "F",
+    "email": "rep002@tcb.com.vn",
+    "phone": "0901419610",
+    "branch": "Chi nhánh Hoàn Kiếm",
+    "active": true
+  },
+  {
+    "rep_id": "REP-003",
+    "full_name": "Phạm Văn Đức",
+    "gender": "M",
+    "email": "rep003@tcb.com.vn",
+    "phone": "0905614226",
+    "branch": "Chi nhánh Hải Châu",
+    "active": true
+  },
+  {
+    "rep_id": "REP-004",
+    "full_name": "Nguyễn Thu Hà",
+    "gender": "F",
+    "email": "rep004@tcb.com.vn",
+    "phone": "0905108603",
+    "branch": "Chi nhánh Ninh Kiều",
+    "active": true
+  },
+  {
+    "rep_id": "REP-005",
+    "full_name": "Hoàng Quang Huy",
+    "gender": "M",
+    "email": "rep005@tcb.com.vn",
+    "phone": "0904744854",
+    "branch": "Chi nhánh Lê Chân",
+    "active": true
+  },
+  {
+    "rep_id": "REP-006",
+    "full_name": "Vũ Ngọc Anh",
+    "gender": "F",
+    "email": "rep006@tcb.com.vn",
+    "phone": "0903341057",
+    "branch": "Chi nhánh Quận 3",
+    "active": true
+  },
+  {
+    "rep_id": "REP-007",
+    "full_name": "Đặng Thành Long",
+    "gender": "M",
+    "email": "rep007@tcb.com.vn",
+    "phone": "0902719583",
+    "branch": "Chi nhánh Ba Đình",
+    "active": true
+  },
+  {
+    "rep_id": "REP-008",
+    "full_name": "Bùi Thị Lan",
+    "gender": "F",
+    "email": "rep008@tcb.com.vn",
+    "phone": "0902458591",
+    "branch": "Chi nhánh Thanh Khê",
+    "active": true
+  },
+  {
+    "rep_id": "REP-009",
+    "full_name": "Ngô Tiến Dũng",
+    "gender": "M",
+    "email": "rep009@tcb.com.vn",
+    "phone": "0908078673",
+    "branch": "Chi nhánh Bình Thạnh",
+    "active": true
+  },
+  {
+    "rep_id": "REP-010",
+    "full_name": "Hồ Kim Ngân",
+    "gender": "F",
+    "email": "rep010@tcb.com.vn",
+    "phone": "0901533224",
+    "branch": "Chi nhánh Cầu Giấy",
+    "active": true
+  }
+]

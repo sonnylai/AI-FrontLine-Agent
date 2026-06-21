@@ -1,0 +1,502 @@
+{
+  "CUST-001": [
+    "CASA",
+    "CREDIT_GOLD",
+    "HOME_LOAN",
+    "TRAVEL_INSURANCE"
+  ],
+  "CUST-002": [
+    "CASA",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-003": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "BANCA_LIFE",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-004": [
+    "CASA",
+    "TERM_DEPOSIT_PLUS",
+    "HOME_LOAN",
+    "ACCIDENT_INSURANCE"
+  ],
+  "CUST-005": [
+    "CASA",
+    "CREDIT_GOLD",
+    "BANCA_LIFE"
+  ],
+  "CUST-006": [
+    "CASA",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-007": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "TERM_DEPOSIT_STD",
+    "PERSONAL_LOAN",
+    "HOME_LOAN",
+    "BANCA_LIFE",
+    "ACCIDENT_INSURANCE"
+  ],
+  "CUST-008": [
+    "CASA",
+    "TERM_DEPOSIT_STD",
+    "BANCA_LIFE",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-009": [
+    "CASA"
+  ],
+  "CUST-010": [
+    "CASA"
+  ],
+  "CUST-011": [
+    "CASA"
+  ],
+  "CUST-012": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "TERM_DEPOSIT_STD",
+    "HOME_LOAN"
+  ],
+  "CUST-013": [
+    "CASA",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-014": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "TERM_DEPOSIT_STD",
+    "BANCA_WEALTH",
+    "BUSINESS_LENDING"
+  ],
+  "CUST-015": [
+    "CASA",
+    "BANCA_LIFE"
+  ],
+  "CUST-016": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-017": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "TERM_DEPOSIT_STD"
+  ],
+  "CUST-018": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "TERM_DEPOSIT_STD",
+    "ACCIDENT_INSURANCE"
+  ],
+  "CUST-019": [
+    "CASA",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-020": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-021": [
+    "CASA"
+  ],
+  "CUST-022": [
+    "CASA",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-023": [
+    "CASA",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-024": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-025": [
+    "CASA"
+  ],
+  "CUST-026": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-027": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "BANCA_LIFE",
+    "TRAVEL_INSURANCE",
+    "BUSINESS_LENDING"
+  ],
+  "CUST-028": [
+    "CASA",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-029": [
+    "CASA",
+    "CREDIT_GOLD",
+    "PERSONAL_LOAN",
+    "ACCIDENT_INSURANCE"
+  ],
+  "CUST-030": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_STD",
+    "HOME_LOAN"
+  ],
+  "CUST-031": [
+    "CASA",
+    "CREDIT_GOLD",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-032": [
+    "CASA",
+    "ACCIDENT_INSURANCE"
+  ],
+  "CUST-033": [
+    "CASA",
+    "BANCA_LIFE"
+  ],
+  "CUST-034": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-035": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-036": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "PERSONAL_LOAN",
+    "BANCA_WEALTH"
+  ],
+  "CUST-037": [
+    "CASA"
+  ],
+  "CUST-038": [
+    "CASA",
+    "TERM_DEPOSIT_PLUS",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-039": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-040": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-041": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-042": [
+    "CASA",
+    "CREDIT_ELITE",
+    "BANCA_WEALTH",
+    "ACCIDENT_INSURANCE",
+    "CERT_DEPOSIT",
+    "BUSINESS_LENDING"
+  ],
+  "CUST-043": [
+    "CASA"
+  ],
+  "CUST-044": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-045": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_PLUS",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-046": [
+    "CASA",
+    "CREDIT_ELITE",
+    "TERM_DEPOSIT_PLUS",
+    "HOME_LOAN",
+    "BANCA_WEALTH",
+    "TRAVEL_INSURANCE",
+    "BUSINESS_LENDING"
+  ],
+  "CUST-047": [
+    "CASA",
+    "CREDIT_GOLD",
+    "PERSONAL_LOAN",
+    "BANCA_LIFE"
+  ],
+  "CUST-048": [
+    "CASA",
+    "CREDIT_GOLD",
+    "PERSONAL_LOAN",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-049": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-050": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-051": [
+    "CASA",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-052": [
+    "CASA",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-053": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_PLUS",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-054": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "TERM_DEPOSIT_PLUS",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-055": [
+    "CASA"
+  ],
+  "CUST-056": [
+    "CASA"
+  ],
+  "CUST-057": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-058": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-059": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_STD",
+    "PERSONAL_LOAN",
+    "BANCA_LIFE"
+  ],
+  "CUST-060": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_PLUS",
+    "ACCIDENT_INSURANCE"
+  ],
+  "CUST-061": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_STD",
+    "BANCA_WEALTH",
+    "ACCIDENT_INSURANCE"
+  ],
+  "CUST-062": [
+    "CASA",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-063": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "BUSINESS_LENDING"
+  ],
+  "CUST-064": [
+    "CASA"
+  ],
+  "CUST-065": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-066": [
+    "CASA",
+    "CREDIT_GOLD",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-067": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "PERSONAL_LOAN",
+    "ACCIDENT_INSURANCE"
+  ],
+  "CUST-068": [
+    "CASA",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-069": [
+    "CASA",
+    "PERSONAL_LOAN",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-070": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-071": [
+    "CASA"
+  ],
+  "CUST-072": [
+    "CASA",
+    "HOME_LOAN"
+  ],
+  "CUST-073": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-074": [
+    "CASA",
+    "CREDIT_ELITE",
+    "TERM_DEPOSIT_STD",
+    "BANCA_WEALTH"
+  ],
+  "CUST-075": [
+    "CASA",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-076": [
+    "CASA",
+    "CREDIT_GOLD",
+    "ACCIDENT_INSURANCE",
+    "BUSINESS_LENDING"
+  ],
+  "CUST-077": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "TERM_DEPOSIT_PLUS",
+    "BANCA_WEALTH",
+    "TRAVEL_INSURANCE"
+  ],
+  "CUST-078": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-079": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "TERM_DEPOSIT_PLUS"
+  ],
+  "CUST-080": [
+    "CASA",
+    "CREDIT_GOLD",
+    "HOME_LOAN",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-081": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_PLUS",
+    "PERSONAL_LOAN",
+    "BANCA_WEALTH"
+  ],
+  "CUST-082": [
+    "CASA",
+    "CREDIT_GOLD",
+    "PERSONAL_LOAN",
+    "BUSINESS_LENDING"
+  ],
+  "CUST-083": [
+    "CASA",
+    "TERM_DEPOSIT_STD",
+    "BANCA_WEALTH"
+  ],
+  "CUST-084": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_PLUS",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-085": [
+    "CASA",
+    "CREDIT_GOLD",
+    "HOME_LOAN",
+    "CERT_DEPOSIT"
+  ],
+  "CUST-086": [
+    "CASA",
+    "CREDIT_GOLD",
+    "BANCA_LIFE",
+    "TRAVEL_INSURANCE"
+  ],
+  "CUST-087": [
+    "CASA",
+    "PERSONAL_LOAN",
+    "BANCA_WEALTH"
+  ],
+  "CUST-088": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TRAVEL_INSURANCE"
+  ],
+  "CUST-089": [
+    "CASA",
+    "CREDIT_GOLD",
+    "ACCIDENT_INSURANCE"
+  ],
+  "CUST-090": [
+    "CASA",
+    "CREDIT_GOLD",
+    "PERSONAL_LOAN",
+    "HOME_LOAN",
+    "BANCA_LIFE"
+  ],
+  "CUST-091": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "CERT_DEPOSIT",
+    "BUSINESS_LENDING"
+  ],
+  "CUST-092": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-093": [
+    "CASA",
+    "CREDIT_GOLD",
+    "BANCA_WEALTH",
+    "TRAVEL_INSURANCE"
+  ],
+  "CUST-094": [
+    "CASA",
+    "CREDIT_ELITE",
+    "HOME_LOAN"
+  ],
+  "CUST-095": [
+    "CASA",
+    "CREDIT_PLATINUM",
+    "ACCIDENT_INSURANCE",
+    "BUSINESS_LENDING"
+  ],
+  "CUST-096": [
+    "CASA",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-097": [
+    "CASA",
+    "CREDIT_GOLD",
+    "TERM_DEPOSIT_STD",
+    "PERSONAL_LOAN",
+    "BANCA_LIFE"
+  ],
+  "CUST-098": [
+    "CASA",
+    "CREDIT_GOLD"
+  ],
+  "CUST-099": [
+    "CASA",
+    "PERSONAL_LOAN"
+  ],
+  "CUST-100": [
+    "CASA"
+  ]
+}

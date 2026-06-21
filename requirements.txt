@@ -1,0 +1,53 @@
+# ── Core API ──────────────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+pydantic>=2.10.0,<3.0.0
+pydantic-settings>=2.5.0,<3.0.0
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+python-jose[cryptography]>=3.3.0
+
+# ── Agent Framework ───────────────────────────────────────────────────────────
+langgraph==1.2.5
+langgraph-checkpoint>=4.1.1
+langgraph-prebuilt>=1.1.0
+langchain-core>=1.4.7,<2.0.0
+langchain-text-splitters>=0.3.0
+langsmith>=0.8.0
+
+# ── LLM Provider ──────────────────────────────────────────────────────────────
+anthropic>=0.52.0,<1.0.0        # Sonnet 4.6 (reasoning) + Haiku 4.5 (routing, NLI)
+
+# ── Embeddings ────────────────────────────────────────────────────────────────
+cohere>=5.0.0,<6.0.0            # embed-multilingual-v3 via direct Cohere API
+
+# ── Vector / Search DB ────────────────────────────────────────────────────────
+opensearch-py>=2.7.0
+
+# ── Relational DB ─────────────────────────────────────────────────────────────
+psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0,<3.0.0        # ORM for seed scripts only; runtime uses Hasura GraphQL
+asyncpg>=0.29.0                 # async Postgres for FastAPI
+
+# ── Graph DB ──────────────────────────────────────────────────────────────────
+neo4j>=5.0.0,<6.0.0             # pin to 5.x — stable with NumPy 2.x
+
+# ── Cache ─────────────────────────────────────────────────────────────────────
+redis>=5.0.0
+
+# ── NLI Model (per-agent faithfulness checks) ─────────────────────────────────
+sentence-transformers>=3.0.0
+numpy>=1.26.0,<2.0.0            # pin to 1.x — torch 2.2.x requires numpy<2
+torch>=2.2.0                    # MPS support on Apple Silicon; NLI model inference
+
+# ── HTTP / Async ──────────────────────────────────────────────────────────────
+httpx>=0.27.0
+aiohttp>=3.10.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+tenacity>=8.0.0                 # retry logic for external calls
+tiktoken>=0.7.0                 # token counting
+pytest>=8.2.0
+pytest-asyncio>=0.24.0
