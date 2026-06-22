@@ -65,8 +65,7 @@ Detailed data (transactions, balances, full contract list) is NOT here — Query
 
 | Field | Type | Example | Notes |
 |---|---|---|---|
-| `intent` | `str` | `"TRANSACTION_QUERY"` | One of: `TRANSACTION_QUERY`, `CONTRACT_QUERY`, `PRODUCT_KNOWLEDGE`, `ADVISORY` |
-| `sub_questions` | `list[dict]` | See schema below | One entry per agent to invoke |
+| `sub_questions` | `list[dict]` | See schema below | One entry per agent to invoke. Each item carries its own `intent` field — there is no top-level `intent` in AgentState. |
 | `active_agents` | `list[str]` | `["query_dispatcher"]` | Derived from sub_questions for fan-out |
 | `rewritten_query` | `str` | `"Chi tiêu của CUST-001 theo danh mục trong 90 ngày gần đây"` | Self-contained query passed to agent |
 | `query_type` | `str` | `"aggregate_by_category"` | QueryDispatcher template name (only set when intent = TRANSACTION_QUERY) |
@@ -164,7 +163,7 @@ QueryDispatcher writes here after each Hasura call. Next identical query is serv
 | query_type | TTL | Rationale |
 |---|---|---|
 | `profile_demographics` | 24h | Demographics rarely change within a day |
-| `product_portfolio_summary` | 6h | Products change infrequently |
+| `product_portfolio_summary` | 24h | Products change infrequently (same TTL as demographics) |
 | `loan_balance_remaining` | 6h | Updated by payment cycle, not real-time |
 | `term_deposit_list` | 6h | Stable within a day |
 | `insurance_contract_status` | 6h | Stable within a day |
@@ -245,10 +244,10 @@ Written by Haiku summarisation on session end.
 | `profile_demographics` | `income_range, occupation, kyc_status, credit_score, loyalty_points, city, relationship_since` | none |
 | `product_portfolio_summary` | `products_held{product_code}, contracts{contract_id, product_name, status, start_date, end_date}` | none |
 | `aggregate_by_category` | `SUM(amount) GROUP BY merchant_category` | `date_from`, `date_to` |
-| `aggregate_by_merchant` | `SUM(amount) WHERE merchant_name / merchant_category` | `date_from`, `date_to`, `merchant_category` |
+| `aggregate_by_merchant` | Raw transactions → Python aggregation. Two sub-queries: `AggMerchantByName` (`merchant_name _ilike`) when `merchant_name` param present; `AggMerchantByCat` (`merchant_category _eq`) otherwise. | `date_from`, `date_to`, `merchant_name` **or** `merchant_category` |
 | `transaction_count_by_period` | `COUNT(*) WHERE transaction_date BETWEEN` | `date_from`, `date_to` |
 | `casa_balance_summary` | `accounts{account_type, balance, currency}` WHERE type IN CASA/SAVINGS | none |
 | `loan_balance_remaining` | `loan_accounts{product_name, outstanding_balance, monthly_installment, maturity_date}` | none |
 | `term_deposit_list` | `term_deposits{product_name, principal_amount, interest_rate, maturity_date, status}` | none |
 | `insurance_contract_status` | `contracts{product_type=INSURANCE, status, start_date, end_date, key_amount}` | none |
-| `segment_gap_analysis` | `products_held{product_code}` + NBA rules (Python) | none |
+| `segment_gap_analysis` | No Hasura call — pure Python `_fmt_segment_gap(customer_360)` using `products_held` already in state | none |
