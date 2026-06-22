@@ -16,13 +16,14 @@ AI FrontLine Agent is a bank CRM AI system that gives sales representatives an A
 | GraphQL API | Hasura | Auto-generated GraphQL over PostgreSQL; row-level security for rep portfolio access |
 | LLM (Reasoning) | Claude Sonnet 4.6 — Anthropic API | Contract reasoning, product knowledge, advisory, final synthesis |
 | LLM (Routing) | Claude Haiku 4.5 — Anthropic API | Intent classification + query rewrite (single call, fast) |
-| LLM (NLI) | Claude Haiku 4.5 — Anthropic API | Final NLI faithfulness check (cost-efficient) |
+| LLM (NLI) | Claude Haiku 4.5 — Anthropic API | Final NLI faithfulness check only (Layer 4) |
 | Embedding | Cohere embed-multilingual-v3 — Cohere API | Document and query embedding (Vietnamese + English) |
+| Reranker | Cohere rerank-multilingual-v3.0 — Cohere API | Cross-lingual semantic reranking after RRF merge |
 | Structured DB | PostgreSQL | Customer 360 data, transactions, products, long-term memory |
 | Vector DB | OpenSearch | Product documents, contract clauses, RAG retrieval, conversation summaries |
 | Graph DB | Neo4j | Customer contract entity relationships |
 | Cache | Redis | Session context, query results, contract data, RAG results |
-| Observability | LangSmith | Tracing, prompt versioning, RAGAS evaluation scores |
+| Observability | LangSmith | Full trace tree: RAG spans, Hasura spans, NLI spans, per-request traces |
 | Data Source | Data Lake | Source of truth feeding all downstream databases |
 
 ---
@@ -83,18 +84,19 @@ The Orchestrator **is** the LangGraph `StateGraph` — a Python execution contro
 
 - Owns session initialization: loads long-term memory and assembles the system prompt on first message
 - Manages the LangGraph node execution order
-- Handles conditional routing (single intent → direct, multi-intent → fan-out)
+- Handles conditional routing (single intent → direct, multi-intent → fan-out via LangGraph `Send()` API)
 - Collects sub-agent outputs and drives final synthesis
 - Pipes the async token generator back to FastAPI as SSE
+- Creates a fresh `LangChainTracer` per request for multi-turn LangSmith tracing
 
 **Mental model:**
 
 | Thing | Role | Makes LLM calls? |
 |---|---|---|
 | Orchestrator | Traffic controller — routes, coordinates, pipes tokens | No |
-| IntentRewriteNode | Chef — classifies and rewrites | Yes (Haiku) |
-| Knowledge Agents | Chefs — retrieve and reason | Yes (Sonnet) |
-| QueryDispatcher | Cashier — maps to template, executes deterministically | No |
+| IntentRewriteNode | Classifier — classifies, rewrites, resolves dates | Yes (Haiku) |
+| Knowledge Agents | Reasoners — retrieve and reason | Yes (Sonnet) |
+| QueryDispatcher | Executor — maps to template, executes deterministically | No |
 
 ---
 
@@ -108,23 +110,22 @@ flowchart TD
     subgraph ORCH["Orchestrator — LangGraph StateGraph  (Python controller, no LLM)"]
         RC["① Load Session Context\nfrom Redis  ·  on miss: load from Postgres + OpenSearch"]
         IG["② Input Guardrail  ·  sync  ·  200ms\nPII masking · prompt injection · topic filter"]
-        IR["③ IntentRewriteNode  ·  Haiku 4.5\nClassify + Rewrite + Split into sub-questions"]
-        ROUTE{"④ Conditional Router\nsingle intent → direct to 1 agent\nmulti-intent → fan-out to N agents"}
+        IR["③ IntentRewriteNode  ·  Haiku 4.5\nClassify + Rewrite + Resolve dates → sub_questions list"]
+        ROUTE{"④ Conditional Router\nsingle intent → direct to 1 agent\nmulti-intent → fan-out via Send() API"}
 
-        QD["QueryDispatcher\nNo LLM · Hasura GraphQL → Postgres"]
+        QD["QueryDispatcher\nNo LLM · 10 Hasura GraphQL templates → Postgres\nverified=True always (deterministic data)"]
         CKA["ContractKnowledgeAgent\nSonnet 4.6 · Graph DB + RAG"]
         PKA["ProductKnowledgeAgent\nSonnet 4.6 · RAG only"]
         AA["AdvisoryAgent\nSonnet 4.6 · Profile + NBA"]
 
-        NQ["NLI ✓  per-answer  sync  Haiku"]
-        NC["NLI ✓  per-answer  sync  Haiku"]
-        NP["NLI ✓  per-answer  sync  Haiku"]
-        NA["NLI ✓  per-answer  sync  Haiku"]
+        NC["NLI ✓  per-answer  heuristic  ~1ms"]
+        NP["NLI ✓  per-answer  heuristic  ~1ms"]
+        NA["NLI ✓  per-answer  heuristic  ~1ms"]
 
         AGG["⑤ AggregatorNode\nMerge verified + flagged answers"]
         SYN["⑥ Final Synthesis  ·  Sonnet 4.6\nStream tokens to client"]
-        OG["Output Guardrail  ·  async post-stream\nPII · compliance · security"]
-        FN["Final NLI  ·  async post-stream\nSynthesis faithfulness check  ·  Haiku"]
+        OG["Output Guardrail  ·  async post-stream\nPII · compliance · security  (rule-based)"]
+        FN["Final NLI  ·  async post-stream\nSynthesis faithfulness check  ·  Haiku 4.5"]
     end
 
     REDIS[("Redis\nSession · RAG cache · Query cache")]
@@ -148,18 +149,17 @@ flowchart TD
     ROUTE -->|"ADVISORY"| AA
 
     QD --> HASURA --> PG
-    QD --> NQ
 
     CKA <-->|"traverse relationships"| NEO
-    CKA <-->|"BM25 30% + semantic 70%\ntop-10 + top-10 → RRF → cross-encoder → top-5"| OS
+    CKA <-->|"BM25 30% + semantic 70%\ntop-10 + top-10 → RRF → Cohere rerank → top-5"| OS
     CKA --> NC
 
-    PKA <-->|"BM25 30% + semantic 70%\ntop-10 + top-10 → RRF → cross-encoder → top-5"| OS
+    PKA <-->|"BM25 30% + semantic 70%\ntop-10 + top-10 → RRF → Cohere rerank → top-5"| OS
     PKA --> NP
 
     AA --> NA
 
-    NQ --> AGG
+    QD --> AGG
     NC --> AGG
     NP --> AGG
     NA --> AGG
@@ -180,39 +180,40 @@ A **single LLM call** that performs both classification and rewriting simultaneo
 
 **Jobs:**
 1. **Intent Classification** — detect which agent categories apply: `TRANSACTION_QUERY`, `CONTRACT_QUERY`, `PRODUCT_KNOWLEDGE`, `ADVISORY`
-2. **Query Rewrite** — resolve vague references ("this customer" → `CUST_001`, "last 3 months" → date range), split multi-intent questions into atomic sub-questions, each routable to exactly one agent
+2. **Query Rewrite** — resolve vague references ("this customer" → `CUST_001`), resolve relative dates ("last 3 months" → concrete `date_from`/`date_to`), split multi-intent questions into atomic sub-questions each routable to exactly one agent
 
-**Output (list of sub-questions):**
+**Output (`sub_questions` list in AgentState):**
 ```json
 [
   {
     "id": "sq1",
     "intent": "TRANSACTION_QUERY",
-    "agent": "QueryDispatcher",
+    "agent": "query_dispatcher",
     "query_type": "aggregate_by_merchant",
     "params": {
-      "customer_id": "CUST_001",
-      "merchant_category": "GRAB",
-      "date_from": "2026-03-20",
-      "date_to": "2026-06-20",
-      "aggregation": "SUM_AMOUNT"
-    }
+      "customer_id": "CUST-001",
+      "merchant_name": "booking.com",
+      "date_from": "2026-03-21",
+      "date_to": "2026-06-21"
+    },
+    "rewritten_query": "Khách hàng CUST-001 có giao dịch với booking.com trong 3 tháng qua không?"
   }
 ]
 ```
 
-If the list has 1 item → Conditional Router sends directly to that agent. If multiple items → fan-out in parallel.
+If the list has 1 item → Conditional Router sends directly to that agent. If multiple items → fan-out in parallel via LangGraph `Send()`.
+
+> **Implementation note:** system prompt uses `.replace("{today}", today)` — not `.format()` — to avoid `KeyError` on the JSON curly braces inside the prompt template.
 
 ---
 
 #### Node 2: Conditional Router
 
-Pure Python LangGraph edge. Reads the sub-question list from IntentRewriteNode:
+Pure Python LangGraph edge (`_fan_out`). Reads `sub_questions` from state:
 
-- `len == 1` → route directly to the single matched agent (no fan-out overhead)
-- `len > 1` → spawn parallel branches, one per sub-question
-
-This avoids unnecessary parallel overhead for the majority of single-intent messages (estimated ~70% of queries).
+- Iterates sub-questions, injects per-branch `query_type`, `query_params`, and `rewritten_query` into a copy of the state
+- Dispatches each branch via `Send(node_name, branch_state)` in parallel
+- Falls back to `"aggregator"` directly if `sub_questions` is empty
 
 ---
 
@@ -220,22 +221,30 @@ This avoids unnecessary parallel overhead for the majority of single-intent mess
 
 Handles all `TRANSACTION_QUERY` and structured profile queries. Pure Python — no LLM involved.
 
-Maps `query_type` to a pre-built named GraphQL query, executes it via Hasura against PostgreSQL. Result: < 100ms on cache hit, eliminates hallucination risk on structured data retrieval.
+Maps `query_type` to one of **10 pre-built named GraphQL templates**, executes via Hasura against PostgreSQL. All date parameters are converted from `YYYY-MM-DD` to `timestamptz` format (`YYYY-MM-DDT00:00:00`) before passing to Hasura.
 
-**Predefined query templates (MVP):**
-- `aggregate_by_merchant`
-- `aggregate_by_category`
-- `product_portfolio_summary`
-- `loan_balance_remaining`
-- `segment_gap_analysis`
-- `transaction_count_by_period`
-- `casa_balance_summary`
-- `term_deposit_list`
-- `insurance_contract_status`
+**Result:** `verified=True` always — deterministic Postgres data carries no hallucination risk.
 
-If no template matches (~20% of cases), falls back to **NL2SQL** — Haiku generates SQL, validated as `SELECT`-only via `EXPLAIN` before execution.
+**Query templates (10 total):**
 
-Result → per-answer NLI check (Haiku) → Aggregator.
+| `query_type` | What it returns | Date params |
+|---|---|---|
+| `profile_demographics` | Income range, occupation, KYC, credit score, loyalty points | No |
+| `product_portfolio_summary` | Products held + all contracts | No |
+| `aggregate_by_category` | Spend totals grouped by merchant category | Yes |
+| `aggregate_by_merchant` | Transactions by merchant name (`_ilike`) or category | Yes |
+| `transaction_count_by_period` | Count of transactions in date range | Yes |
+| `casa_balance_summary` | CASA + savings account balances | No |
+| `loan_balance_remaining` | Active loans: outstanding balance, monthly payment | No |
+| `term_deposit_list` | Term deposits: principal, rate, maturity | No |
+| `insurance_contract_status` | Insurance contracts: status, dates, key amount | No |
+| `segment_gap_analysis` | Derived from state — no Hasura call | No |
+
+`aggregate_by_merchant` dispatches to one of two sub-queries depending on params:
+- **By name** (e.g. "booking.com"): `merchant_name: {_ilike: "%booking.com%"}`
+- **By category** (e.g. "F&B"): `merchant_category: {_eq: "F&B"}`
+
+> **No NL2SQL fallback** — unrecognised `query_type` values return an unsupported message. NL2SQL is a future enhancement.
 
 ---
 
@@ -244,14 +253,14 @@ Result → per-answer NLI check (Haiku) → Aggregator.
 Handles `CONTRACT_QUERY` — questions requiring reasoning over the customer's signed contracts.
 
 **Steps:**
-1. Check Redis for cached contract data (`contract:{customer_id}`, TTL 12h)
+1. Check Redis for cached contract data (`contract:{customer_id}`, TTL 6h)
 2. On miss: traverse Neo4j — `Customer -[HAS]-> Contract -[IS_TYPE]-> Policy -[HAS_CLAUSE]-> Clause`
 3. Write Graph DB result to Redis cache
-4. Check Redis semantic cache for RAG result (`rag:{query_hash}`)
-5. On miss: hybrid RAG on OpenSearch — BM25 (30%) + semantic (70%) → top-10 each → RRF merge → cross-encoder re-rank → **top-5 clause chunks**
+4. Check Redis semantic cache for RAG result (`rag:{query_hash}`, TTL 6h)
+5. On miss: hybrid RAG on OpenSearch — BM25 (30%) + semantic (70%) → top-10 each → RRF merge → Cohere rerank (`rerank-multilingual-v3.0`) → **top-5 chunks**
 6. Write RAG result to Redis cache
 7. Send contract graph context + top-5 chunks to Sonnet for reasoning
-8. Per-answer NLI check (Haiku): answer vs retrieved chunks → return to Aggregator
+8. Per-answer NLI check (heuristic) → return to Aggregator
 
 **Data boundary:**
 - **Neo4j:** contract metadata and entity relationships (contract ID, type, status, parties, clause references)
@@ -265,10 +274,10 @@ Handles `PRODUCT_KNOWLEDGE` — general product information queries (T&Cs, rates
 
 **Steps:**
 1. Check Redis semantic cache for RAG result (`rag:{query_hash}`, TTL 6h)
-2. On miss: hybrid RAG on OpenSearch — BM25 (30%) + semantic (70%) → top-10 each → RRF merge → cross-encoder re-rank → **top-5 chunks**
+2. On miss: hybrid RAG on OpenSearch — BM25 (30%) + semantic (70%) → top-10 each → RRF merge → Cohere rerank → **top-5 chunks** + sibling expansion
 3. Write RAG result to Redis cache
 4. Send top-5 chunks to Sonnet for reasoning
-5. Per-answer NLI check (Haiku): answer vs retrieved chunks → return to Aggregator
+5. Per-answer NLI check (heuristic) → return to Aggregator
 
 **Why 30/70 BM25/semantic split for Vietnamese:** BM25 does exact token matching — Vietnamese compound words and tone marks cause tokenization mismatches. Semantic embedding handles morphological variation naturally. BM25 at 30% still handles exact product codes, clause numbers, and English terms embedded in Vietnamese text (e.g., "KYC", "APE", "L/C").
 
@@ -278,11 +287,9 @@ Handles `PRODUCT_KNOWLEDGE` — general product information queries (T&Cs, rates
 
 Handles `ADVISORY` — sales script generation and product recommendations.
 
-Uses customer profile (from session context), transaction behavior, conversation history, and NBA/NBO model output as context. Generates tailored talking points and sales scripts grounded in actual customer data.
+Uses customer profile (from session context), transaction behavior, conversation history, and NBA/NBO rule-based scoring on segment gap and product portfolio gaps. Generates tailored talking points and sales scripts grounded in actual customer data.
 
-Per-answer NLI check (Haiku) ensures the script does not reference facts not present in the customer's profile or conversation history.
-
-*Note: TCB NBA/NBO model integration is simplified for MVP — uses rule-based scoring on segment gap and product portfolio gaps.*
+Per-answer NLI check (heuristic) ensures the script does not reference facts not present in the customer's profile or conversation history.
 
 ---
 
@@ -302,14 +309,16 @@ Receives the merged context block from the Aggregator. Generates a single cohesi
 
 | # | Check | Model | Timing | Purpose |
 |---|---|---|---|---|
-| 1 | **Input Guardrail** | Rule-based | Sync, pre-pipeline, 200ms | Prompt injection, PII masking in query, off-topic filter |
-| 2 | **Per-agent NLI** | Haiku 4.5 | Sync, inside each agent | Agent answer faithfulness vs its own retrieved data — primary hallucination defence |
-| 3 | **Output Guardrail** | Rule-based | Async, post-stream | PII in final response, compliance keywords, security |
+| 1 | **Input Guardrail** | Rule-based regex | Sync, pre-pipeline, ~200ms | Prompt injection, PII masking in query, off-topic filter |
+| 2 | **Per-agent NLI** | Heuristic (~1ms, zero token cost) | Sync, inside each RAG agent | Term overlap (>20%) + number grounding between answer and retrieved chunks — primary hallucination defence |
+| 3 | **Output Guardrail** | Rule-based regex | Async, post-stream | PII patterns in final response, prohibited compliance phrases |
 | 4 | **Final NLI** | Haiku 4.5 | Async, post-stream | Synthesized answer vs aggregated sub-answers — catches hallucinations added during Sonnet synthesis step |
 
-**Why Final NLI after streaming:** Sonnet synthesis can introduce plausible-but-wrong claims when stitching multiple sub-answers together. Final NLI catches this failure mode. It runs async so it does not block the token stream — the rep sees the answer immediately, then receives a `{type: "verified" | "warning"}` SSE event as a verdict indicator.
+> **Layer 2 detail:** `nli_checker.py` uses heuristic checks only — no LLM call. Key term overlap between the answer and all retrieved chunks must exceed 20%; any number >3 digits in the answer must appear in at least one chunk. Production upgrade path: swap for `mDeBERTa-v3-base-mnli-xnli` when PyTorch ≥ 2.4 is confirmed stable.
 
-**Streaming strategy (Option C):** Stream tokens to client immediately → Output Guardrail and Final NLI run in parallel on the buffered complete response → send verdict event.
+> **QueryDispatcher skips NLI** — data comes directly from Postgres via deterministic GraphQL; `verified=True` is set unconditionally.
+
+**Streaming strategy:** Stream tokens to client immediately → Output Guardrail and Final NLI run in parallel on the buffered complete response → send `{type: "verified" | "warning"}` SSE verdict event.
 
 ---
 
@@ -346,9 +355,9 @@ Four namespaces. Agents never call Redis directly — all cache reads/writes go 
 
 | Namespace | Key Pattern | TTL | Invalidation |
 |---|---|---|---|
-| Session context | `session:{rep_id}:{customer_id}:{date}` | 4h | Session end |
+| Session context | `session:{session_id}` | 4h | Session end |
 | Query results | `query:{customer_id}:{query_type}:{params_hash}` | 30min–24h (tiered) | Write-through + TTL |
-| Contract data | `contract:{customer_id}` | 12h | `CONTRACT_UPDATED` event from Data Lake |
+| Contract data | `contract:{customer_id}` | 6h | `CONTRACT_UPDATED` event from Data Lake |
 | RAG results | `rag:{query_hash}` | 6h | Document ingestion event |
 
 **Tiered TTL by data change frequency:**
@@ -356,10 +365,10 @@ Four namespaces. Agents never call Redis directly — all cache reads/writes go 
 | Data Type | TTL |
 |---|---|
 | Customer demographics | 24h |
-| Product portfolio | 6h |
+| Product portfolio | 24h |
 | Loan / term deposit balance | 6h |
+| Insurance contracts | 6h |
 | Transaction aggregations | 30min |
-| Contracts | 12h + event-triggered |
 | RAG / product documents | 6h + ingestion event |
 | Session context | Session duration (max 4h) |
 
@@ -369,35 +378,75 @@ Four namespaces. Agents never call Redis directly — all cache reads/writes go 
 
 #### Ingestion (Offline)
 ```
-Markdown / PDF documents
-  → Chunking: 512 tokens, 10% overlap (51 tokens)
-  → Cohere embed-multilingual-v3 (batch embedding)
-  → OpenSearch index with metadata:
-      { doc_type, product_name, language, effective_date, contract_id }
+Markdown documents  (data/documents/**/*.md)
+  → Stage 1: Split on ## / ### headings (MarkdownHeaderTextSplitter)
+  → Stage 2: RecursiveCharacterTextSplitter if section > 400 tokens
+             chunk_size=400 tokens, overlap=80 tokens (~20%)
+  → Continuation sub-chunks prepend section heading (e.g. "### 2.1 Ba Quỹ Liên Kết")
+    so each chunk is semantically self-contained for retrieval
+  → Cohere embed-multilingual-v3 (batch embedding, input_type="search_document")
+  → OpenSearch index "product-docs" with metadata:
+      { doc_id, product_category, product_name, h2_section, h3_section,
+        chunk_index, token_count, source_file }
 ```
 
 #### Retrieval (Online, per agent query)
 ```
-Step 1 — Hybrid Search (parallel):
-  BM25 keyword search    → top-10 chunks  (weight 0.3 in RRF)
-  Semantic vector search → top-10 chunks  (weight 0.7 in RRF)
-  RRF merge: score = 0.3 × 1/(rank_bm25 + 60) + 0.7 × 1/(rank_sem + 60)
-  → ~12–15 unique chunks after deduplication
+Step 1 — Parallel hybrid search:
+  BM25 keyword search     → top-10 chunks  (weight 0.3 in RRF)
+  Cohere KNN vector search → top-10 chunks  (weight 0.7 in RRF)
+  RRF merge: score = 0.3 × 1/(rank_bm25+60) + 0.7 × 1/(rank_sem+60)
+  → ~12–18 unique candidates
 
-Step 2 — Re-ranking:
-  Cross-encoder re-scores ~12–15 chunks against the original query
+Step 2 — Cohere rerank:
+  rerank-multilingual-v3.0 rescores candidates against the original query
   Returns top-5 most relevant chunks
-  (10+10 → ~15 unique is ~40% less cross-encoder compute vs 20+20 → 20)
 
-Step 3 — Context assembly:
-  Top-5 chunks + source citations → LLM prompt
+Step 3 — Sibling chunk expansion:
+  For each top-5 chunk, fetch chunk_index+1 if it shares the same h3_section
+  Fixes split sections where a continuation chunk lacks the section heading
+  (e.g. Banca fund descriptions split across two chunks)
+
+Step 4 — Context assembly:
+  Final chunks + source citations → LLM prompt
 ```
 
-**Why top-10 per modality (not 20):** BM25 and semantic search have significant result overlap — fetching 10 each yields ~12–15 unique chunks after RRF, sufficient for re-ranking to top-5. Fetching 20 each gives ~20 unique but doubles cross-encoder compute and token cost with negligible recall improvement.
+**Why top-10 per modality:** BM25 and semantic search have significant result overlap — fetching 10 each yields ~12–18 unique chunks after RRF, sufficient for Cohere rerank to select top-5. Increasing to 20 doubles reranker API cost with negligible recall improvement.
+
+**Why Cohere API reranker (not local cross-encoder):** Vietnamese + English multilingual support out of the box; no GPU/model management; `rerank-multilingual-v3.0` outperforms local cross-encoders on Vietnamese banking text in testing.
 
 ---
 
-### 9. Evaluation Dataset
+### 9. Observability — LangSmith
+
+Every request creates one trace in LangSmith under the project `ai-frontline-agent`. A fresh `LangChainTracer` is instantiated per request (not a singleton) to ensure multi-turn conversations produce separate, correctly-labelled traces.
+
+**Span tree per request:**
+```
+chat:{customer_id}                        ← root run
+└── LangGraph
+    ├── _product_agent (or other agent)
+    │   ├── RAG·BM25          retriever  — query, total hits, chunk previews
+    │   ├── RAG·KNN           retriever  — query, total hits, chunk previews
+    │   ├── RAG·RRF_Merge     chain      — bm25_count, knn_count, merged_count
+    │   ├── RAG·Cohere_Rerank chain      — relevance scores per chunk
+    │   ├── RAG·Sibling_Expansion chain  — added chunk IDs
+    │   └── NLI·PerAgent      chain      — agent, overlap_pct, verified, warning
+    ├── _query_dispatcher
+    │   └── QueryDispatcher·Hasura tool  — query_type, variables_sent, rows_returned
+    └── aggregator
+        ├── NLI·OutputGuardrail chain    — passed, triggered_rule (pii/compliance label)
+        └── NLI·Final          chain     — consistent, issues (Haiku input/output)
+```
+
+**Implementation notes:**
+- RAG `@traceable` log functions are called in the **async event loop** (after `run_in_executor` returns), not inside the thread — this ensures they inherit the active LangSmith run-tree context and appear as child spans
+- `NLI·Final` is applied directly to the async `check()` function
+- Hasura client logs query name + variables at `INFO` level to stdout in addition to LangSmith
+
+---
+
+### 10. Evaluation Dataset
 
 RAGAS evaluation requires a **golden dataset** — without it, evaluation scores are meaningless. This must be built before any offline evaluation run.
 
@@ -406,8 +455,8 @@ RAGAS evaluation requires a **golden dataset** — without it, evaluation scores
 | Type | Volume | Source |
 |---|---|---|
 | Product knowledge Q&A | ~200 examples (10–15 per product × 15 products) | LLM-draft from product documents → human review |
-| Contract clause reasoning | ~50 examples | Hand-crafted from known clause scenarios (e.g., Clause 7.3 VIP medical: continuous ≥12mo + Gold/Platinum/Elite → 25M VND) |
-| Structured query (QueryDispatcher) | ~50 examples | Sampled from seed data; query + expected SQL + expected result |
+| Contract clause reasoning | ~50 examples | Hand-crafted from known clause scenarios |
+| Structured query (QueryDispatcher) | ~50 examples | Sampled from seed data; query + expected template + expected result |
 | Adversarial / edge cases | ~30 examples | Cross-product confusion; ambiguous pronouns; out-of-scope questions |
 
 **Format (JSONL):**
@@ -420,29 +469,25 @@ RAGAS evaluation requires a **golden dataset** — without it, evaluation scores
 }
 ```
 
-**Generation workflow:**
-1. Use Claude to draft Q/A pairs from each product document (prompt: "generate 15 diverse questions...")
-2. Human review: fix wrong answers, add tricky edge cases, verify clause references
-3. Store in `data/evaluation/golden_dataset.jsonl`
-4. Gate every architecture change (chunking, retrieval config, model swap) on this dataset
+> **Dependency conflict:** `ragas>=0.2.0` requires `langchain-core 0.3.x` which conflicts with `langgraph 1.x`. Run Ragas evaluations in a separate venv (`requirements-eval.txt`). Use Claude Sonnet as the judge (not OpenAI default) for reliable Vietnamese scoring.
 
 #### Evaluation Cadence
 
-- **Online (20% sampling):** Every 5th production query → log question + retrieved chunks + answer → async RAGAS job hourly → push scores to LangSmith → alert if Faithfulness < 0.8
-- **Offline (gated):** Full golden dataset run before any change to chunking strategy, retrieval config, re-ranker, or LLM model — gate on Faithfulness ≥ 0.85, Context Recall ≥ 0.80
+- **Offline (gated):** Full golden dataset run before any change to chunking strategy, retrieval config, reranker, or LLM model — gate on Faithfulness ≥ 0.85, Context Recall ≥ 0.80
+- **Online (future):** 20% sampling → log question + retrieved chunks + answer → async RAGAS job → push scores to LangSmith → alert if Faithfulness < 0.8
 
 **RAGAS metrics tracked:** Faithfulness, Answer Relevancy, Context Precision, Context Recall
 
 ---
 
-### 10. Memory Model
+### 11. Memory Model
 
 #### Short-term Memory (In-session, ephemeral)
-Managed by LangGraph `messages` state. Holds the running conversation, tool call results, and intermediate reasoning for the current session. Discarded when the session ends — never persisted.
+Managed by LangGraph `AgentState`. Holds the running conversation, tool call results, and intermediate reasoning for the current session. Discarded when the session ends — never persisted.
 
 #### Long-term Memory (Persistent, cross-session)
 
-Owned and loaded by the **Orchestrator (LangGraph node ①)**, not by FastAPI. Loaded on first message in a session, injected into the LangGraph state as the system prompt, cached in Redis for the session duration.
+Owned and loaded by the **Orchestrator (LangGraph node ①)**, not by FastAPI. Loaded on first message in a session, injected into the LangGraph state, cached in Redis for the session duration.
 
 | Content | Store | Notes |
 |---|---|---|
@@ -454,16 +499,15 @@ Owned and loaded by the **Orchestrator (LangGraph node ①)**, not by FastAPI. L
 
 **Scoping:** Long-term memory is scoped to the **customer** — any rep who manages that customer sees the same memory.
 
-**Session lifecycle (Orchestrator owns this, not FastAPI):**
+**Session lifecycle:**
 ```
 Session START (first /chat/stream call for a session_id):
-  Orchestrator node ① checks Redis for session:{rep}:{cust}
+  Orchestrator node ① checks Redis for session:{session_id}
   On miss:
-    Load customer 360 from PostgreSQL via Hasura
+    Load customer 360 (8 minimal fields) from PostgreSQL via Hasura
     Load last 3–5 conversation summaries from OpenSearch
-    Load behavior profile + offer history from PostgreSQL
-    Assemble system prompt
-    Cache assembled context in Redis (TTL: 4h)
+    Assemble context into AgentState
+    Cache in Redis (TTL: 4h)
   On hit:
     Use cached context directly
 
@@ -473,17 +517,6 @@ Session END (/api/sessions/end):
   Update behavior profile in PostgreSQL (new observations)
   Clear session cache from Redis
 ```
-
----
-
-### 11. Observability — LangSmith
-
-- Every LangGraph node execution traced (inputs, outputs, latency, token usage, model)
-- Tool calls (Hasura GraphQL, Neo4j, OpenSearch, Redis) logged per execution
-- NLI check results (pass/fail + score) logged per agent
-- Prompt versions tracked and pinned per environment (dev / staging / prod)
-- RAGAS online evaluation scores surfaced in LangSmith dashboard
-- Alerts: Faithfulness < 0.8, p95 latency > 20s
 
 ---
 
@@ -508,9 +541,9 @@ Session END (/api/sessions/end):
 | Parallel agents (bottleneck: ContractKnowledgeAgent) | ~4,000ms |
 | — Neo4j traversal | 500ms |
 | — OpenSearch hybrid search | 400ms |
-| — Cross-encoder re-rank (15 chunks) | 400ms |
+| — Cohere rerank (top-10+10 candidates) | 300ms |
 | — Sonnet reasoning | 2,000ms |
-| — Per-answer NLI (Haiku) | 700ms |
+| — Per-answer NLI (heuristic) | ~1ms |
 | AggregatorNode | 100ms |
 | Sonnet synthesis — first token | 500ms |
 | **First token to rep** | **~5.6s** |
@@ -524,7 +557,7 @@ Session END (/api/sessions/end):
 | Customer 360 panel load time | < 2s |
 | Structured query — cache hit | < 100ms |
 | Input guardrail check | < 200ms |
-| Per-answer NLI check (Haiku) | < 700ms |
+| Per-answer NLI check (heuristic) | < 5ms |
 | RAG Faithfulness score | ≥ 0.85 |
 | Context Recall score | ≥ 0.80 |
 | Cache hit rate — QueryDispatcher | > 70% |
