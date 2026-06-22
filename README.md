@@ -2,7 +2,15 @@
 This project is not aim to build a full AI agent for frontline. this is only for practice purpose, as I'm studying in AIE accelator course. Then building an agent to test and understand the techniques such as: LangGraph, python, RAG pipeline, chunking strategy, Guardrail, Evaluation via NLI/ragas, Graph RAG, Multi Agent architecture, prompting
 ... 
 
-Below is information about this project 
+Please refer to document:
+Solution design:
+- Architecture.md
+- Architecrture.drawio
+- Sequence_diagram.md
+- Memory_schema.md
+
+Below is guidance to setup
+
 # AI FrontLine Agent V2
 
 A multi-agent AI assistant for TCB sales representatives. The agent answers natural-language questions about customers by combining structured Postgres data, graph (Neo4j) contract data, and RAG product knowledge — streamed in real time via SSE.
