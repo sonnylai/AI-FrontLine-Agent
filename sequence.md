@@ -4,83 +4,72 @@
 
 ## Diagram 1: Session Start
 
-When a sales rep opens the chat for a specific customer. Loads long-term memory and customer 360 data, assembles the system prompt, caches it for the session.
+When a sales rep opens the chat for a specific customer. Pre-warms Redis with customer 360 data and conversation summaries so the first chat message doesn't pay the load cost.
 
 ```mermaid
 sequenceDiagram
     participant Rep as Sales Rep
     participant FE as Frontend (HTML)
     participant API as FastAPI
-    participant Auth as Auth Middleware
     participant Redis
+    participant Hasura
     participant PG as PostgreSQL
     participant OS as OpenSearch
 
     Rep->>FE: Opens customer chat (customer_id)
-    FE->>API: POST /api/sessions/start {rep_id, customer_id}
+    FE->>API: POST /api/sessions/start {customer_id}
 
-    API->>Auth: Validate JWT token
-    Auth-->>API: PASS — rep is authorized for this customer
+    Note over API: JWT validated via Depends(get_current_rep)
 
-    API->>Redis: GET session:{rep_id}:{customer_id}:{date}
+    API->>Redis: GET session:{session_id}
     Redis-->>API: MISS
 
-    par Load customer profile
-        API->>PG: Fetch customer 360 (profile, products, transactions summary)
-        PG-->>API: Customer data
+    par Load customer 360
+        API->>Hasura: GraphQL LoadSession — 8 fields + products_held
+        Hasura->>PG: SQL SELECT
+        PG-->>Hasura: Customer row
+        Hasura-->>API: customer_360 (8 minimal fields)
     and Load long-term memory
-        API->>PG: Fetch behavior profile + product offer history
-        PG-->>API: Behavior profile, offer history
-        API->>OS: Vector search — last 3 conversation summaries for this customer
-        OS-->>API: Conversation summaries
+        API->>OS: Search conversation-summaries — last 5 for customer_id
+        OS-->>API: Conversation summaries (sorted by date desc)
     end
 
-    API->>API: Assemble system prompt (profile + summaries + behavior)
-    API->>Redis: SET session:{rep_id}:{customer_id}:{date} TTL 4h
-
-    API-->>FE: {session_id, customer_360_data}
-    FE->>FE: Render right panel (Customer 360)
-    FE-->>Rep: UI ready — right panel populated
+    API->>Redis: SET session:{session_id} TTL 4h
+    API-->>FE: {session_id, customer_id}
+    FE-->>Rep: UI ready — session open
 ```
 
 ---
 
 ## Diagram 2: Session End
 
-When the rep closes the chat or ends the session. Summarizes the conversation and writes back to long-term memory.
+When the rep closes the chat. Haiku summarizes the conversation and writes to long-term memory, then clears Redis.
 
 ```mermaid
 sequenceDiagram
     participant Rep as Sales Rep
     participant FE as Frontend (HTML)
     participant API as FastAPI
-    participant CS as Claude Sonnet
-    participant PG as PostgreSQL
+    participant Haiku as Claude Haiku 4.5
     participant OS as OpenSearch
     participant Redis
 
     Rep->>FE: Closes chat / ends session
-    FE->>API: POST /api/sessions/end {session_id, customer_id}
+    FE->>API: POST /api/sessions/end {session_id, customer_id, messages: [...]}
 
-    API->>CS: Summarize full conversation (short-term messages state)
-    Note over CS: Extracts: topics discussed, products offered,<br/>objections raised, follow-up items, behavior observations
-    CS-->>API: Conversation summary + behavior observations
+    Note over API: JWT validated via Depends(get_current_rep)
 
-    par Write to long-term memory
-        API->>OS: Store conversation summary (vector embed + index)
-        OS-->>API: Stored
-    and Update behavior profile
-        API->>PG: Update behavior profile (new observations)
-        PG-->>API: Updated
-    and Log offer outcomes
-        API->>PG: Record products pitched this session + outcomes
-        PG-->>API: Recorded
-    end
+    API->>Haiku: Summarize conversation (full message list)
+    Note over Haiku: Extracts: summary, key_concerns,<br/>products_discussed, sentiment
+    Haiku-->>API: JSON summary
 
-    API->>Redis: DELETE session:{rep_id}:{customer_id}:{date}
+    API->>OS: Index summary to conversation-summaries
+    OS-->>API: Stored
+
+    API->>Redis: DELETE session:{session_id}
     Redis-->>API: Cleared
 
-    API-->>FE: Session ended
+    API-->>FE: 204 No Content
     FE-->>Rep: Chat cleared
 ```
 
@@ -88,7 +77,7 @@ sequenceDiagram
 
 ## Diagram 3: Multi-Agent Chat Query (Fan-out / Fan-in)
 
-Main flow for a complex query requiring two agents in parallel. Example query from sales rep:
+Main flow for a complex query requiring two agents in parallel. Example:
 > *"How much has this customer spent on Grab in the last 90 days, and does his Banca contract qualify for the premium travel insurance discount?"*
 
 This triggers `TRANSACTION_QUERY` (→ QueryDispatcher) and `CONTRACT_QUERY` (→ ContractKnowledgeAgent) in parallel.
@@ -98,171 +87,230 @@ sequenceDiagram
     participant Rep as Sales Rep
     participant FE as Frontend (HTML)
     participant API as FastAPI
-    participant IG as Input Guardrail
-    participant Orch as Orchestrator
+    participant Orch as Orchestrator (LangGraph)
     participant IR as IntentRewrite Node (Haiku)
-    participant QD as Query Dispatcher
-    participant CKA as Contract Knowledge Agent
-    participant NLI as NLI Checker
+    participant QD as QueryDispatcher
+    participant CKA as ContractKnowledgeAgent
+    participant CS as Claude Sonnet 4.6
+    participant Cohere as Cohere API
     participant AGG as Aggregator Node
-    participant CS as Claude Sonnet
     participant OG as Output Guardrail
+    participant FN as Final NLI (Haiku)
     participant Redis
+    participant Hasura
     participant PG as PostgreSQL
-    participant GDB as Graph DB
+    participant Neo4j
     participant OS as OpenSearch
 
     Rep->>FE: Types query message
     FE->>API: POST /api/chat/stream {session_id, customer_id, message}
+    Note over API: JWT validated via Depends(get_current_rep)
 
-    API->>IG: Validate input
-    Note over IG: Check: prompt injection, PII in prompt,<br/>topic relevance, security threats
-    IG-->>API: PASS
+    API->>Orch: orchestrator.run(...) — LangGraph ainvoke
 
-    API->>Orch: Route to agent pipeline
-    Orch->>Redis: GET session:{rep_id}:{customer_id}:{date}
-    Redis-->>Orch: HIT — system prompt context loaded
+    Note over Orch: Node ① — load_session_context
+    Orch->>Redis: GET session:{session_id}
+    Redis-->>Orch: HIT — customer_360 + summaries injected into state
 
-    Orch->>IR: message + session context
-    Note over IR: Single Haiku call:<br/>1. Classify intents<br/>2. Rewrite sub-questions with structured params
-    IR-->>Orch: sq1 (TRANSACTION_QUERY → QueryDispatcher)<br/>sq2 (CONTRACT_QUERY → ContractKnowledgeAgent)
+    Note over Orch: Node ② — input_guard (rule-based regex, ~1ms)
+    Orch->>Orch: input_guardrail.check(message) — PASS
+
+    Note over Orch: Node ③ — intent_rewrite
+    Orch->>IR: message + customer context
+    Note over IR: Single Haiku call: classify intents,<br/>rewrite sub-questions, resolve relative dates
+    IR-->>Orch: sub_questions [sq1: TRANSACTION_QUERY→QD, sq2: CONTRACT_QUERY→CKA]
+
+    Note over Orch: _fan_out edge — LangGraph Send() API dispatches parallel branches
 
     par Fan-out: sq1 → QueryDispatcher (No LLM)
-        Orch->>QD: sq1 {query_type: aggregate_by_merchant, customer_id, merchant: GRAB, date_from, date_to}
-        QD->>Redis: GET query:CUST_001:aggregate_by_merchant:{hash}
+        Orch->>QD: branch_state {query_type: aggregate_by_merchant, params: {merchant_name: "grab", date_from, date_to}}
+        QD->>Redis: GET query:CUST-001:aggregate_by_merchant:{hash}
         Redis-->>QD: MISS
-        QD->>PG: GraphQL — aggregate Grab transactions for CUST_001
-        PG-->>QD: {total_amount: 1240000, count: 18, currency: VND}
-        QD->>Redis: SET query:CUST_001:aggregate_by_merchant:{hash} TTL 30min
-        QD->>NLI: Validate answer vs raw query result
-        NLI-->>QD: PASS
-        QD-->>AGG: sq1 answer validated ✓
+        QD->>Hasura: GraphQL AggMerchantByName {cid, from: timestamptz, to: timestamptz, name: "%grab%"}
+        Hasura->>PG: SQL SELECT
+        PG-->>Hasura: transaction rows
+        Hasura-->>QD: {transactions: [...]}
+        QD->>Redis: SET query:...:aggregate_by_merchant:{hash} TTL 30min
+        QD-->>AGG: {agent: "query_dispatcher", answer: "...", verified: true}
 
-    and Fan-out: sq2 → ContractKnowledgeAgent (Sonnet)
-        Orch->>CKA: sq2 {customer_id, question: "Banca contract qualify for travel insurance discount?"}
+    and Fan-out: sq2 → ContractKnowledgeAgent
+        Orch->>CKA: branch_state {rewritten_query: "Banca contract qualify for travel insurance discount?"}
 
-        CKA->>Redis: GET contract:CUST_001
+        CKA->>Redis: GET contract:CUST-001
         Redis-->>CKA: MISS
-        CKA->>GDB: Traverse Customer → Contract → Policy → Clause
-        GDB-->>CKA: Contract BC-2024-441, type: BancaLifeInsurance, status: active
-        CKA->>Redis: SET contract:CUST_001 TTL 12h
+        CKA->>Neo4j: Traverse Customer→Contract→Policy→Clause
+        Neo4j-->>CKA: contract metadata + clause references
+        CKA->>Redis: SET contract:CUST-001 TTL 6h
 
-        CKA->>Redis: GET rag:{query_hash} (semantic cache check)
+        CKA->>Redis: GET rag:{query_hash}
         Redis-->>CKA: MISS
-        CKA->>OS: Hybrid search — BM25 + Cohere semantic (top 20 each)
-        OS-->>CKA: Top 20 merged chunks (via RRF)
-        CKA->>OS: Re-rank with cross-encoder
-        OS-->>CKA: Top 5 chunks
+
+        par Hybrid RAG search (top-10 each)
+            CKA->>OS: BM25 keyword search → top-10 chunks
+            OS-->>CKA: top-10 BM25 hits
+        and
+            CKA->>Cohere: embed query (embed-multilingual-v3.0)
+            Cohere-->>CKA: query vector
+            CKA->>OS: KNN vector search → top-10 chunks
+            OS-->>CKA: top-10 KNN hits
+        end
+
+        CKA->>CKA: RRF merge (BM25 weight 0.3, KNN weight 0.7) → ~12-18 candidates
+        CKA->>Cohere: rerank-multilingual-v3.0 top-5
+        Cohere-->>CKA: top-5 reranked chunks
+        CKA->>OS: Sibling expansion — fetch chunk_index+1 for same h3_section
+        OS-->>CKA: sibling chunks (if any)
         CKA->>Redis: SET rag:{query_hash} TTL 6h
 
-        CKA->>CS: Contract graph + top 5 chunks → reason about eligibility
-        CS-->>CKA: "Clause 7.3 grants 10% discount on premium renewal for active Banca holders with continuous coverage > 1 year"
-        CKA->>NLI: Validate answer vs retrieved clause text
-        NLI-->>CKA: PASS
-        CKA-->>AGG: sq2 answer validated ✓
+        CKA->>CS: contract graph context + RAG chunks → reason about eligibility
+        CS-->>CKA: answer text
+        CKA->>CKA: NLI heuristic check — term overlap + number grounding (~1ms, no LLM)
+        CKA-->>AGG: {agent: "contract", answer: "...", verified: true/false, warning: ...}
     end
 
-    AGG->>AGG: Merge sq1 + sq2 validated answers into context block
-    AGG->>CS: Synthesize final response from merged context
-    Note over CS: Streams tokens as generated
+    Note over AGG: Node ⑤ — Aggregator
+    AGG->>AGG: Merge all agent results into synthesis prompt
+    AGG->>CS: Synthesize final response (streaming)
 
-    loop Token streaming
-        CS-->>OG: Token chunk
-        OG->>OG: PII masking check on chunk
-        OG-->>FE: SSE event {type: "token", content: "..."}
+    loop Token streaming — Sonnet writes to async queue
+        CS-->>AGG: token chunk
+        AGG-->>API: SSE {type: "token", content: "..."}
+        API-->>FE: SSE event
         FE-->>Rep: Text appears progressively
     end
 
-    CS-->>OG: Stream complete
+    Note over AGG,FN: Stream complete — post-stream checks run in parallel (asyncio.gather)
+    par Post-stream safety (parallel)
+        AGG->>OG: output_guardrail.check(full_answer)
+        Note over OG: Regex: PII patterns + compliance phrases
+        OG-->>AGG: (passed: bool, warning: str|None)
+    and
+        AGG->>FN: final_nli.check(full_answer, agent_results)
+        Note over FN: Haiku: is synthesis consistent<br/>with all agent answers?
+        FN-->>AGG: (consistent: bool, issues: str|None)
+    end
 
-    Note over OG,NLI: Async — runs in parallel after stream ends
-    OG->>NLI: Final NLI check on complete buffered response
-    NLI-->>OG: PASS — no hallucination added during synthesis
-    OG-->>FE: SSE event {type: "verified"}
-    FE-->>Rep: ✓ Verified indicator shown
-
+    AGG-->>API: SSE {type: "done", verified: bool, warning: str|null}
+    API-->>FE: SSE event
+    FE-->>Rep: ✓ verified or ⚠ warning indicator shown
 ```
 
 ---
 
 ## Diagram 4: NLI Failure — Partial Answer Handling
 
-What happens when one sub-agent fails the NLI check. The system delivers a partial answer rather than failing the whole request.
+What happens when the ContractKnowledgeAgent fails the per-agent NLI check. No retry — the flagged answer passes through to the Aggregator with `verified=False` so Sonnet can acknowledge uncertainty.
 
 ```mermaid
 sequenceDiagram
-    participant Orch as Orchestrator
-    participant QD as Query Dispatcher
-    participant CKA as Contract Knowledge Agent
-    participant NLI as NLI Checker
+    participant Orch as Orchestrator (LangGraph)
+    participant QD as QueryDispatcher
+    participant CKA as ContractKnowledgeAgent
+    participant CS as Claude Sonnet 4.6
     participant AGG as Aggregator Node
-    participant CS as Claude Sonnet
     participant OG as Output Guardrail
+    participant FN as Final NLI (Haiku)
+    participant API as FastAPI
     participant FE as Frontend
 
+    Note over Orch: _fan_out dispatches both branches in parallel
+
     par Fan-out
-        QD-->>NLI: Validate sq1 answer
-        NLI-->>QD: PASS ✓
-        QD-->>AGG: sq1 answer — verified
+        Orch->>QD: sq1 — aggregate_by_merchant
+        Note over QD: No NLI — verified=True always (deterministic Postgres data)
+        QD-->>AGG: {verified: true, answer: "Grab spend: 1.24M VND (18 transactions)"}
 
     and Fan-out
-        CKA-->>NLI: Validate sq2 answer
-        Note over NLI: Answer references a clause<br/>not present in retrieved chunks
-        NLI-->>CKA: FAIL ✗
-        CKA->>CKA: Retry with broader retrieval (top 10 chunks)
-        CKA-->>NLI: Validate retry answer
-        NLI-->>CKA: FAIL ✗ (second attempt)
-        CKA-->>AGG: sq2 answer — flagged as UNCERTAIN
+        Orch->>CKA: sq2 — contract clause eligibility
+        CKA->>CKA: Retrieve context, call Sonnet, run heuristic NLI check
+        Note over CKA: NLI FAIL — answer references a clause<br/>not found in retrieved chunks (overlap < 20%)
+        Note over CKA: No retry — flagged answer passed through
+        CKA-->>AGG: {verified: false, warning: "Câu trả lời chứa thông tin không có trong nguồn dữ liệu"}
     end
 
-    AGG->>CS: Merge context — mark sq2 as uncertain
-    Note over CS: Instructed to acknowledge uncertainty<br/>for sq2 in its response
+    AGG->>CS: Merge context — sq2 marked ⚠ UNCERTAIN
+    Note over CS: System prompt instructs Sonnet to<br/>acknowledge uncertainty for unverified answers
 
-    CS-->>OG: Stream response
-    Note over CS: "Grab spend: 1.24M VND (18 transactions). ⚠ I could not fully verify<br/>the Banca contract eligibility — please review the policy document directly."
+    CS-->>AGG: "Grab spend: 1.24M VND (18 transactions). ⚠ Không thể xác minh đầy đủ điều khoản hợp đồng Banca — vui lòng kiểm tra trực tiếp tài liệu hợp đồng."
 
-    OG-->>FE: Stream tokens + SSE event {type: "warning"}
-    FE-->>FE: Show ⚠ warning banner alongside response
+    loop Token streaming
+        AGG-->>API: SSE {type: "token", content: "..."}
+        API-->>FE: SSE event
+    end
+
+    par Post-stream checks (parallel)
+        AGG->>OG: output_guardrail.check(full_answer) — PASS
+        AGG->>FN: final_nli.check(full_answer, agent_results)
+        Note over FN: Haiku detects sq2 was uncertain —<br/>synthesis correctly reflected that
+        FN-->>AGG: {consistent: true}
+    end
+
+    AGG-->>API: SSE {type: "done", verified: false, warning: "..."}
+    API-->>FE: SSE event
+    FE-->>FE: Show ⚠ warning indicator alongside response
+    FE-->>FE: Rep sees partial answer with uncertainty notice
 ```
 
 ---
 
 ## Diagram 5: Simple Query — QueryDispatcher Cache Hit
 
-Fast path for a common structured query. No LLM involved, served from cache in milliseconds.
+Fast path for a common structured query. No LLM in QueryDispatcher — pure Python formatting. Aggregator still calls Sonnet for final synthesis.
 
 ```mermaid
 sequenceDiagram
     participant Rep as Sales Rep
     participant FE as Frontend
     participant API as FastAPI
-    participant IG as Input Guardrail
+    participant Orch as Orchestrator (LangGraph)
     participant IR as IntentRewrite Node (Haiku)
-    participant QD as Query Dispatcher
-    participant NLI as NLI Checker
-    participant CS as Claude Sonnet
+    participant QD as QueryDispatcher
+    participant AGG as Aggregator Node
+    participant CS as Claude Sonnet 4.6
     participant OG as Output Guardrail
+    participant FN as Final NLI (Haiku)
     participant Redis
 
     Rep->>FE: "What products does this customer currently have?"
     FE->>API: POST /api/chat/stream
+    Note over API: JWT validated via Depends(get_current_rep)
 
-    API->>IG: Validate input — PASS
-    API->>IR: message + session context
-    IR-->>API: sq1 {query_type: product_portfolio_summary, customer_id: CUST_001}
+    API->>Orch: orchestrator.run(...)
 
-    API->>QD: sq1 params
-    QD->>Redis: GET query:CUST_001:product_portfolio_summary
-    Redis-->>QD: HIT — {accounts: 2, loans: 1, banca: 1, term_deposits: 0, credit_cards: 1}
+    Note over Orch: Node ① — session context already in Redis (HIT)
+    Note over Orch: Node ② — input_guard PASS
+    Note over Orch: Node ③ — intent_rewrite
 
-    QD->>NLI: Validate cached result
-    NLI-->>QD: PASS (deterministic data, no LLM involved)
+    Orch->>IR: message + context
+    IR-->>Orch: sub_questions [{query_type: product_portfolio_summary, customer_id: CUST-001}]
 
-    QD-->>CS: Cached result → format as natural language response
-    CS-->>OG: Stream tokens
-    OG-->>FE: SSE stream
-    FE-->>Rep: "Mr A currently holds: 2 CASA accounts, 1 home loan (450M VND remaining),<br/>1 active Banca Life Insurance contract, and 1 Gold Credit Card."
-    OG-->>FE: SSE event {type: "verified"}
+    Note over Orch: _fan_out → single branch to QueryDispatcher
+
+    Orch->>QD: branch_state {query_type: product_portfolio_summary}
+    QD->>Redis: GET query:CUST-001:product_portfolio_summary:{hash}
+    Redis-->>QD: HIT — cached result
+
+    Note over QD: Pure Python _fmt_portfolio() formats result<br/>No NLI — verified=True always (deterministic data)
+    QD-->>AGG: {agent: "query_dispatcher", answer: "Danh mục: CASA x2, Home Loan, Banca, Gold Card", verified: true}
+
+    Note over AGG: Node ⑤ — Aggregator calls Sonnet for final synthesis
+    AGG->>CS: Synthesize response from QueryDispatcher result
+    CS-->>AGG: token stream
+
+    loop Token streaming
+        AGG-->>API: SSE {type: "token", content: "..."}
+        API-->>FE: SSE event
+        FE-->>Rep: Text appears progressively
+    end
+
+    par Post-stream checks (parallel)
+        AGG->>OG: output_guardrail.check(full_answer) — PASS
+        AGG->>FN: final_nli.check(full_answer, agent_results) — PASS
+    end
+
+    AGG-->>API: SSE {type: "done", verified: true}
+    API-->>FE: SSE event
+    FE-->>Rep: ✓ Verified indicator shown
 ```
 
 ---
@@ -271,12 +319,12 @@ sequenceDiagram
 
 | Concern | Mechanism |
 |---|---|
-| Auth | JWT validated per-request; Hasura claims embedded for row-level security |
-| Session context | Redis cache (4h TTL) — avoids re-fetching Postgres + OpenSearch on every message |
-| Query cache | Per-query Redis keys with tiered TTL (30m transactions, 24h demographics) |
-| Structured data | GraphQL via Hasura → Postgres — no LLM, `verified=True` always |
-| RAG data | OpenSearch vector search → product / contract docs |
+| Auth | JWT validated per-request via `Depends(get_current_rep)`; Hasura claims embedded for row-level security |
+| Session context | Pre-warmed at `/sessions/start`; Redis cache (4h TTL) — avoids re-fetching Hasura + OpenSearch on every message |
+| Query cache | Per-query Redis keys with tiered TTL (30min transactions, 6h contracts/deposits, 24h demographics) |
+| Structured data | GraphQL via Hasura → Postgres — no LLM, `verified=True` always, pure Python formatting |
+| RAG data | OpenSearch BM25 + KNN (top-10 each) → RRF → Cohere rerank → top-5 + sibling expansion |
 | Intent routing | Haiku LLM → fan-out to 1–N agents in parallel via LangGraph `Send()` |
-| Synthesis | Sonnet streams tokens directly to SSE queue — no buffering delay |
-| Safety | 4 layers: input regex (sync) → per-agent NLI → output regex → final NLI (Haiku, post-stream) |
-| Observability | LangSmith `@traceable` spans on RAG stages, Hasura calls, and all NLI layers |
+| Synthesis | Sonnet streams tokens to async queue → FastAPI yields SSE — no buffering delay |
+| Safety | 4 layers: input regex (node ②, sync) → per-agent NLI heuristic (sync, ~1ms) → output regex + final NLI Haiku (both post-stream, parallel) |
+| Observability | LangSmith `@traceable` spans: RAG·BM25/KNN/RRF/Rerank/Sibling, QueryDispatcher·Hasura, NLI·PerAgent/OutputGuardrail/Final |
