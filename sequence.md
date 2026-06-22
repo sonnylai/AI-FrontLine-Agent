@@ -315,6 +315,192 @@ sequenceDiagram
 
 ---
 
+## Diagram 6: Product Knowledge Query
+
+A rep asks a general product question. No Neo4j, no Hasura — pure RAG → Sonnet → NLI. RAG hits cached in Redis.
+
+Example: *"Sản phẩm thẻ tín dụng Platinum có những quyền lợi gì?"*
+
+```mermaid
+sequenceDiagram
+    participant Rep as Sales Rep
+    participant FE as Frontend
+    participant API as FastAPI
+    participant Orch as Orchestrator (LangGraph)
+    participant IR as IntentRewrite Node (Haiku)
+    participant PKA as ProductKnowledgeAgent
+    participant CS as Claude Sonnet 4.6
+    participant Cohere as Cohere API
+    participant AGG as Aggregator Node
+    participant OG as Output Guardrail
+    participant FN as Final NLI (Haiku)
+    participant Redis
+    participant OS as OpenSearch
+
+    Rep->>FE: "Thẻ tín dụng Platinum có quyền lợi gì?"
+    FE->>API: POST /api/chat/stream
+    Note over API: JWT validated via Depends(get_current_rep)
+
+    API->>Orch: orchestrator.run(...)
+
+    Note over Orch: Node ① — session context loaded from Redis (HIT)
+    Note over Orch: Node ② — input_guard PASS
+    Note over Orch: Node ③ — intent_rewrite
+
+    Orch->>IR: message + customer context
+    IR-->>Orch: sub_questions [{intent: PRODUCT_KNOWLEDGE, agent: product, rewritten_query: "..."}]
+
+    Note over Orch: _fan_out → single branch to ProductKnowledgeAgent
+    Orch->>PKA: branch_state {rewritten_query: "Quyền lợi thẻ tín dụng Platinum"}
+
+    PKA->>Redis: GET rag:{md5("product-docs:{query}")}
+    Redis-->>PKA: MISS
+
+    par Hybrid RAG search (top-10 each)
+        PKA->>OS: BM25 keyword search → top-10 chunks
+        OS-->>PKA: top-10 BM25 hits
+    and
+        PKA->>Cohere: embed query (embed-multilingual-v3.0)
+        Cohere-->>PKA: query vector
+        PKA->>OS: KNN vector search → top-10 chunks
+        OS-->>PKA: top-10 KNN hits
+    end
+
+    PKA->>PKA: RRF merge (BM25 0.3, KNN 0.7) → ~12-18 candidates
+    PKA->>Cohere: rerank-multilingual-v3.0 → top-5
+    Cohere-->>PKA: top-5 reranked chunks
+    PKA->>OS: Sibling expansion — fetch chunk_index+1 for same h3_section
+    OS-->>PKA: sibling chunks (if any)
+
+    PKA->>Redis: SET rag:{hash} TTL 6h
+    Note over PKA: Stores serializable fields only<br/>{_id, text, product_name, h2_section, h3_section}
+
+    PKA->>CS: customer segment + products_held + top-5 chunks + query
+    CS-->>PKA: answer text
+
+    PKA->>PKA: NLI heuristic — term overlap + number grounding vs RAG chunks (~1ms)
+    PKA-->>AGG: {agent: "product", answer: "...", verified: true/false, warning: ...}
+
+    Note over AGG: Node ⑤ — Aggregator
+    AGG->>CS: Synthesize final response (streaming)
+
+    loop Token streaming
+        CS-->>AGG: token
+        AGG-->>API: SSE {type: "token", content: "..."}
+        API-->>FE: SSE event
+        FE-->>Rep: Text appears progressively
+    end
+
+    Note over AGG,FN: Post-stream — parallel
+    par
+        AGG->>OG: output_guardrail.check(full_answer)
+        OG-->>AGG: (passed, warning)
+    and
+        AGG->>FN: final_nli.check(full_answer, agent_results)
+        FN-->>AGG: (consistent, issues)
+    end
+
+    AGG-->>API: SSE {type: "done", verified: bool, warning: str|null}
+    API-->>FE: SSE event
+    FE-->>Rep: ✓ or ⚠ indicator shown
+```
+
+---
+
+## Diagram 7: Advisory Query
+
+A rep asks for a product recommendation or sales script. AdvisoryAgent applies NBA rules first (pure Python, no I/O), then retrieves product context for the recommended products. Long-term summaries come from session state — no extra fetch needed.
+
+Example: *"Đề xuất sản phẩm phù hợp nhất cho khách hàng này và cung cấp kịch bản tư vấn."*
+
+```mermaid
+sequenceDiagram
+    participant Rep as Sales Rep
+    participant FE as Frontend
+    participant API as FastAPI
+    participant Orch as Orchestrator (LangGraph)
+    participant IR as IntentRewrite Node (Haiku)
+    participant AA as AdvisoryAgent
+    participant CS as Claude Sonnet 4.6
+    participant Cohere as Cohere API
+    participant AGG as Aggregator Node
+    participant OG as Output Guardrail
+    participant FN as Final NLI (Haiku)
+    participant OS as OpenSearch
+
+    Rep->>FE: "Đề xuất sản phẩm phù hợp và kịch bản tư vấn"
+    FE->>API: POST /api/chat/stream
+    Note over API: JWT validated via Depends(get_current_rep)
+
+    API->>Orch: orchestrator.run(...)
+
+    Note over Orch: Node ① — session context loaded from Redis (HIT)<br/>customer_360 + long_term_summaries already in state
+    Note over Orch: Node ② — input_guard PASS
+    Note over Orch: Node ③ — intent_rewrite
+
+    Orch->>IR: message + customer context
+    IR-->>Orch: sub_questions [{intent: ADVISORY, agent: advisory, rewritten_query: "..."}]
+
+    Note over Orch: _fan_out → single branch to AdvisoryAgent
+    Orch->>AA: branch_state {customer_360, long_term_summaries, rewritten_query}
+
+    Note over AA: NBA rules — pure Python, no I/O (~0ms)
+    AA->>AA: _suggest_nba(customer)<br/>segment → rule table → filter out held products → top-3 gaps
+    Note over AA: e.g. Gold segment, missing BANCASSURANCE + CREDIT_PLATINUM
+
+    Note over AA: RAG for NBA candidates — no Redis cache
+    AA->>Cohere: embed nba_query ("tư vấn sản phẩm BANCASSURANCE CREDIT_PLATINUM cho Gold")
+    Cohere-->>AA: query vector
+
+    par Hybrid RAG search (top-10 each, top_n_final=3)
+        AA->>OS: BM25 keyword search → top-10 chunks
+        OS-->>AA: top-10 BM25 hits
+    and
+        AA->>OS: KNN vector search → top-10 chunks
+        OS-->>AA: top-10 KNN hits
+    end
+
+    AA->>AA: RRF merge → candidates
+    AA->>Cohere: rerank-multilingual-v3.0 → top-3
+    Cohere-->>AA: top-3 reranked product chunks
+    AA->>OS: Sibling expansion — fetch chunk_index+1 for same h3_section
+    OS-->>AA: sibling chunks (if any)
+
+    Note over AA: Assemble prompt from state — no extra DB calls
+    AA->>AA: _format_profile(customer_360, nba, long_term_summaries)<br/>→ segment, income, occupation, held products, last session summary
+
+    AA->>CS: profile_text + product_context + advisory query
+    CS-->>AA: sales script + talking points
+
+    AA->>AA: NLI heuristic — term overlap vs profile_text + RAG chunks (~1ms)
+    AA-->>AGG: {agent: "advisory", answer: "...", sources: [nba_list], verified: true/false}
+
+    Note over AGG: Node ⑤ — Aggregator
+    AGG->>CS: Synthesize final response (streaming)
+
+    loop Token streaming
+        CS-->>AGG: token
+        AGG-->>API: SSE {type: "token", content: "..."}
+        API-->>FE: SSE event
+        FE-->>Rep: Text appears progressively
+    end
+
+    Note over AGG,FN: Post-stream — parallel
+    par
+        AGG->>OG: output_guardrail.check(full_answer)
+        OG-->>AGG: (passed, warning)
+    and
+        AGG->>FN: final_nli.check(full_answer, agent_results)
+        FN-->>AGG: (consistent, issues)
+    end
+
+    AGG-->>API: SSE {type: "done", verified: bool, warning: str|null}
+    API-->>FE: SSE event
+    FE-->>Rep: ✓ or ⚠ indicator shown
+```
+
+---
+
 ## Key Design Decisions
 
 | Concern | Mechanism |
